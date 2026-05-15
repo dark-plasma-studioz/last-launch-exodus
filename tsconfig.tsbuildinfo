@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/config/difficulty.ts","./src/config/items.ts","./src/content/eventchunks.ts","./src/content/events.ts","./src/engine/effects.ts","./src/engine/locations.ts","./src/engine/persistence.ts","./src/engine/rng.ts","./src/engine/runbootstrap.ts"],"version":"5.7.3"}
