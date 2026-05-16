@@ -21,10 +21,10 @@ export interface DifficultyConfig {
 export const DIFFICULTY: Record<DifficultyId, DifficultyConfig> = {
   hard: {
     label: "Hard",
-    years: 4,
-    startingCaps: 720,
+    years: 1.5,
+    startingCaps: 750,
     baseRations: 18,
-    baseWater: 16,
+    baseWater: 18,
     baseMeds: 4,
     baseParts: 5,
     baseFuel: 8,
@@ -33,10 +33,10 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyConfig> = {
   },
   standard: {
     label: "Standard",
-    years: 6,
-    startingCaps: 980,
+    years: 2,
+    startingCaps: 1000,
     baseRations: 24,
-    baseWater: 22,
+    baseWater: 24,
     baseMeds: 6,
     baseParts: 7,
     baseFuel: 11,
@@ -45,20 +45,20 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyConfig> = {
   },
   easier: {
     label: "Easier",
-    years: 9,
-    startingCaps: 1280,
-    baseRations: 32,
-    baseWater: 28,
+    years: 3,
+    startingCaps: 1250,
+    baseRations: 48,
+    baseWater: 48,
     baseMeds: 8,
-    baseParts: 9,
-    baseFuel: 14,
+    baseParts: 8,
+    baseFuel: 16,
     encounterWeight: 0.88,
     rationStress: 0.88,
   },
 };
 
 /** Thousands of km — tuned so daily travel + encounters fill the departure budget on Standard */
-export const START_KM = 4200;
+export const START_KM = 3500;
 
 export function daysFromYears(years: number): number {
   return Math.round(years * 365);
