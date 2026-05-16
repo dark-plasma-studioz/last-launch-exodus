@@ -20,6 +20,12 @@ export interface DepotCart {
   lines: Record<string, number>;
 }
 
+/**
+ * Personal item assignments: maps itemId → friend id.
+ * Each personal item is assigned to at most one member.
+ */
+export type PersonalAssignments = Record<string, string>;
+
 export function applyDepotCheckout(
   difficulty: DifficultyId,
   partySize: number,
@@ -44,16 +50,16 @@ export function applyDepotCheckout(
     const cost = def.price * count;
     if (cost > caps) continue;
     caps -= cost;
-    if (def.kind === "unique") {
+    if (def.kind === "unique" || def.kind === "personal") {
       inventory.push({ itemId, count: 1 });
     }
     if (def.grants) {
       const g = def.grants;
       if (g.rations) res.rations += g.rations * count;
-      if (g.water) res.water += g.water * count;
-      if (g.meds) res.meds += g.meds * count;
-      if (g.parts) res.parts += g.parts * count;
-      if (g.fuel) res.fuel += g.fuel * count;
+      if (g.water)   res.water   += g.water   * count;
+      if (g.meds)    res.meds    += g.meds    * count;
+      if (g.parts)   res.parts   += g.parts   * count;
+      if (g.fuel)    res.fuel    += g.fuel    * count;
     }
   }
 
@@ -72,6 +78,10 @@ export function createRunState(opts: {
   resources: RunResources;
   rngSeed: number;
   capsSpentAtDepot: number;
+  /** Caps not spent at depot (usable at biome shops). */
+  capsRemaining?: number;
+  /** Which personal items were assigned to which friend ids at the depot. */
+  personalAssignments?: PersonalAssignments;
 }): RunState {
   const diff = DIFFICULTY[opts.difficulty];
   const days = daysFromYears(diff.years);
@@ -80,6 +90,38 @@ export function createRunState(opts: {
     38,
     Math.round(64 - (ps.rationMult - 1) * 18 - (ps.encounterMult - 1) * 10),
   );
+
+  const friends: Friend[] = structuredClone(opts.friends).map((f) => ({
+    ...f,
+    sick: undefined,
+    memberItems: [] as string[],
+  }));
+
+  // Apply personal item assignments and their member effects
+  const assignments = opts.personalAssignments ?? {};
+  for (const [itemId, friendId] of Object.entries(assignments)) {
+    const def = getItem(itemId);
+    if (!def || def.kind !== "personal") continue;
+    const friend = friends.find((f) => f.id === friendId);
+    if (!friend) continue;
+    friend.memberItems.push(itemId);
+    if (def.memberEffect) {
+      const me = def.memberEffect;
+      if (me.maxHealthBonus) {
+        friend.maxHealth += me.maxHealthBonus;
+        friend.health    += me.maxHealthBonus;
+      }
+      if (me.moraleBonus) {
+        friend.morale = Math.min(100, friend.morale + me.moraleBonus);
+      }
+    }
+  }
+
+  // Remove personal items from party inventory (they live on members now)
+  const inventory = structuredClone(opts.inventory).filter((e) => {
+    const def = getItem(e.itemId);
+    return def?.kind !== "personal";
+  });
 
   return {
     phase: "run",
@@ -92,9 +134,9 @@ export function createRunState(opts: {
     portChaos: 6 + Math.round((ps.encounterMult - 1) * 12),
     rads: 10,
     transport,
-    resources: { ...opts.resources },
-    friends: structuredClone(opts.friends),
-    inventory: structuredClone(opts.inventory),
+    resources: { ...opts.resources, caps: opts.capsRemaining ?? opts.resources.caps },
+    friends,
+    inventory,
     flags: { embark_chain_started: false },
     log: [
       {

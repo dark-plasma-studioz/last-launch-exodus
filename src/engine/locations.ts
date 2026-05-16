@@ -20,8 +20,8 @@ export const LOCATION_LABEL: Record<LocationId, string> = {
 export function locationFromKm(kmRemaining: number): LocationId {
   if (kmRemaining <= 0) return "embark";
   if (kmRemaining < 420) return "port_sprawl";
-  if (kmRemaining < 1100) return "dead_highway";
-  if (kmRemaining < 2300) return "industrial_strip";
-  if (kmRemaining < 3500) return "abandoned_city";
+  if (kmRemaining < 1435) return "dead_highway";
+  if (kmRemaining < 2000) return "industrial_strip";
+  if (kmRemaining < 2750) return "abandoned_city";
   return "open_waste";
 }

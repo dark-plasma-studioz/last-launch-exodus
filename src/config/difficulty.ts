@@ -140,6 +140,8 @@ export function makeFriend(
     maxHealth: mh,
     morale: Math.max(25, Math.min(100, morale)),
     status: "alive",
+    sick: undefined,
+    memberItems: [],
   };
 }
 
