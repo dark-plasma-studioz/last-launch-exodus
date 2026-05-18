@@ -203,15 +203,15 @@ function ambientPool(): GameEvent[] {
       "amb-found-rations",
       "Cache of rations",
       "{randomLiving} finds a small camp with supplies just off the road and pries them open.",
-      [L("Extra food loaded."), { type: "resource", key: "rations", delta: 6 }],
+      [L("Extra food loaded."), { type: "resource", key: "rations", delta: 12 }],
       ["abandoned_city", "industrial_strip", "dead_highway"],
       0.6,
     ),
     ambient(
       "amb-found-fuel",
       "Buried jerrycans",
-      "Digging a latrine trench, {randomLiving} hits metal — three jerrycans of ethanol mix.",
-      [L("Fuel recovered from beneath the dirt."), { type: "resource", key: "fuel", delta: 5 }],
+      "{randomLiving} spots a crashed convoy. It's mostly empty, but the tank was still full.",
+      [L("Man, gas prices these days..."), { type: "resource", key: "fuel", delta: 5 }],
       ["dead_highway", "industrial_strip"],
       0.45,
     ),
@@ -219,44 +219,20 @@ function ambientPool(): GameEvent[] {
       "amb-found-meds",
       "Aid station remnants",
       "{randomLiving} finds a collapsed field aid post. Most supplies rotted, but a sealed pouch is intact.",
-      [L("Medical supplies salvaged."), { type: "resource", key: "meds", delta: 3 }],
+      [L("Medical supplies salvaged."), { type: "resource", key: "meds", delta: 1 }],
       ["abandoned_city", "port_sprawl"],
       0.4,
     ),
     ambient(
       "amb-broken-leg",
       "Stumble on rubble",
-      "{randomLiving} trips hard and goes down — bad sprain, maybe worse.",
+      "{randomLiving} trips and breaks their leg. What an idiot.",
       [
         L("{randomLiving} is hurt. Watch them carefully."),
         { type: "injure", target: "random_living" },
-        { type: "morale", target: "all_living", delta: -6 },
       ],
       ROT,
       0.4,
-    ),
-    ambient(
-      "amb-rad-pocket",
-      "Hot pocket",
-      "No warning, no landmark — just a buried hot spot in the road. Everyone absorbs a dose.",
-      [
-        L("Rads absorbed. Move quickly."),
-        { type: "rad", delta: 14 },
-        { type: "damage", target: "random_living", amount: 8 },
-      ],
-      ["open_waste", "industrial_strip"],
-      0.5,
-    ),
-    ambient(
-      "amb-morale-sunrise",
-      "Burning sky",
-      "The sky burns with beautiful post-war light. Nobody says anything. Nobody has to.",
-      [
-        L("A moment of strange beauty."),
-        { type: "morale", target: "all_living", delta: 15 },
-      ],
-      undefined,
-      0.45,
     ),
     ambient(
       "amb-supply-rot",
@@ -295,7 +271,7 @@ function ambientPool(): GameEvent[] {
       "Coughing stranger",
       "A sick wanderer climbs into the convoy looking for help. Possible exposure for everyone.",
       [
-        L("Possible exposure. Watch for symptoms."),
+        L("Possible exposure. Watch for symptoms. It's like Covid 19 all over again."),
         { type: "sicken", target: "random_living", sickness: "Ash lung", days: 8 },
       ],
       ["port_sprawl", "dead_highway"],
@@ -314,32 +290,23 @@ function ambientPool(): GameEvent[] {
       0.45,
     ),
     ambient(
-      "amb-refugee-trade",
-      "Roadside deal",
-      "Two stragglers swap meds for parts near the road. {randomLiving} jumps in.",
+      "amb-roadside-gambling",
+      "Roadside gambling",
+      "Two strangers are seen playing some sort of game off the road. {randomLiving} jumps in and somehow wins big?",
       [
-        L("Parts traded for medicine."),
-        { type: "resource", key: "meds", delta: 3 },
-        { type: "resource", key: "parts", delta: -3 },
+        L("Good job I guess?"),
+        { type: "resource", key: "caps", delta: 100 },
       ],
       ["port_sprawl", "dead_highway"],
-      0.4,
+      0.3,
     ),
     ambient(
       "amb-lucky-caps",
       "Scattered loot",
       "A wrecked scavenger rig spilled its cargo. Most is ash, but the cap-belt survived.",
-      [L("Caps recovered from the wreck."), { type: "resource", key: "caps", delta: 55 }],
+      [L("Caps recovered from the wreck."), { type: "resource", key: "caps", delta: 75 }],
       ["open_waste", "dead_highway"],
       0.3,
-    ),
-    ambient(
-      "amb-morale-song",
-      "An old song",
-      "Someone starts humming something from before. Nobody remembers the words, but everyone knows the tune.",
-      [L("The melody carries for an hour."), { type: "morale", target: "all_living", delta: 10 }],
-      undefined,
-      0.4,
     ),
     ambient(
       "amb-found-parts",
@@ -361,7 +328,7 @@ function sicknessEvents(): GameEvent[] {
       title: "Rat infiltration",
       locations: ROT,
       weight: 0.42,
-      body: "Night sounds: scratching, gnawing. At dawn the rations crate is chewed through and the rats are gone — leaving something behind.",
+      body: "{randomLiving} hears noises from the food storage and checks to find it half-eaten by rats.",
       choices: [
         ch(
           "srs-a",
@@ -379,10 +346,10 @@ function sicknessEvents(): GameEvent[] {
         ),
         ch(
           "srs-b",
-          "Eat the gnawed rations — waste nothing.",
+          "EAT IT! BE A MAN.",
           undefined,
           [
-            L("You eat and wait. Maybe nothing happens."),
+            L("The party eats and waits. Maybe nothing happens?"),
             { type: "sicken", target: "random_living", sickness: "Rat fever", days: 8 },
           ],
           [],
@@ -402,7 +369,7 @@ function sicknessEvents(): GameEvent[] {
           55,
           [
             L("Rest slows the progression. For now."),
-            { type: "resource", key: "meds", delta: -3 },
+            { type: "resource", key: "meds", delta: -2 },
             { type: "time", days: 2 },
           ],
           [
@@ -414,7 +381,7 @@ function sicknessEvents(): GameEvent[] {
         ),
         ch(
           "src-b",
-          "Keep marching — there is no time.",
+          "Keep going, they will surely be fine.",
           undefined,
           [
             L("They keep up. For now."),
@@ -535,25 +502,22 @@ function embarkPool(): GameEvent[] {
 
 function wastelandBulk(): GameEvent[] {
   const spots = [
-    "melted overpass",
-    "glassed suburb",
-    "salt pan convoy graveyard",
+    "radioactive swamp",
+    "open plain",
+    "old training facility",
     "collapsed aqueduct",
     "black orchard",
     "rail spine",
-    "radio-tower mausoleum",
-    "cinder school",
-    "toll cathedral of rust",
-    "basement bazaar",
+    "graveyard",
   ];
   const threats = [
-    "dust cholera rumors",
-    "cinder lightning",
+    "bandits lurk here...",
+    "high radiation levels",
     "feral drones",
     "highway kings demanding tribute",
-    "a glowing crater mist",
-    "refugee maps of nowhere",
-    "a cult that worships the launch flame",
+    "mutants",
+    "infected animals hunt here",
+    "The endtimes cult have a camp here.",
   ];
   const out: GameEvent[] = [];
   for (let i = 0; i < 40; i++) {
@@ -579,9 +543,8 @@ function wastelandBulk(): GameEvent[] {
             { type: "resource", key: "fuel", delta: -2 },
           ],
           [
-            L("You get lost in irradiated switchbacks."),
+            L("The party gets lost :("),
             { type: "rad", delta: 18 },
-            { type: "injure", target: "random_living" },
             { type: "morale", target: "all_living", delta: -10 },
           ],
         ),
@@ -590,11 +553,11 @@ function wastelandBulk(): GameEvent[] {
           "Push straight through.",
           pctB,
           [
-            L("{randomLiving} finds a rabbit-path between wrecks."),
+            L("Calm, somehow..."),
             { type: "km", delta: -10 },
           ],
           [
-            L("Ambush. Quick and mean."),
+            L("The convoy attracts unwanted attention."),
             { type: "damage", target: "random_living", amount: 28 },
             { type: "injure", target: "weakest" },
             { type: "resource", key: "meds", delta: -2 },
@@ -615,6 +578,10 @@ function wastelandBulk(): GameEvent[] {
             { type: "resource", key: "rations", delta: -6 },
             { type: "morale", target: "all_living", delta: -8 },
           ],
+          undefined,
+          undefined,
+          undefined,
+          "victim",
         ),
       ],
     });
@@ -629,7 +596,7 @@ function approachBulk(): GameEvent[] {
   for (let i = 0; i < 20; i++) {
     out.push({
       id: `ap-${i}`,
-      title: `Approach corridor — sector ${i + 1}`,
+      title: `Approach corridor - sector ${i + 1}`,
       locations: ["port_sprawl"],
       weight: 1.05,
       minKm: 0,
@@ -699,15 +666,15 @@ function specials(): GameEvent[] {
       title: "Black rain",
       locations: ["open_waste", "industrial_strip", "dead_highway"],
       weight: 0.75,
-      body: "Oil-black rain hisses on the convoy tarp. {randomLiving} coughs metal taste.",
+      body: "Oil-black rain hisses on the convoy tarp, the acid burning skin.",
       choices: [
         ch(
           "sp1a",
-          "Seal the wagons and wait it out.",
-          70,
-          [L("Seals hold. You wait it out."), { type: "time", days: 4 }],
+          "Seal the convoy and wait it out.",
+          80,
+          [L("Seals hold. You wait it out."), { type: "time", days: 2 }],
           [
-            L("Seals fail. Skin burns."),
+            L("{randomLiving} failed to seal their compartment right, a shame they are so STUPID."),
             { type: "rad", delta: 26 },
             { type: "damage", target: "all_living", amount: 16 },
             { type: "resource", key: "meds", delta: -3 },
@@ -715,11 +682,11 @@ function specials(): GameEvent[] {
         ),
         ch(
           "sp1b",
-          "March anyway — no time to stop.",
+          "Continue driving",
           50,
-          [L("Guts hold. Barely."), { type: "rad", delta: 10 }],
+          [L("The engine creaks, but holds."), { type: "rad", delta: 10 }],
           [
-            L("Someone collapses in the rain."),
+            L("The engine fails, the acid burning it. "),
             { type: "injure", target: "weakest" },
             { type: "morale", target: "all_living", delta: -14 },
           ],
