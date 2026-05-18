@@ -666,6 +666,9 @@ function specials(): GameEvent[] {
       title: "Black rain",
       locations: ["open_waste", "industrial_strip", "dead_highway"],
       weight: 0.75,
+      memberSlots: [
+        slot("sealer", "Who seals the compartments?", "player_choice"),
+      ],
       body: "Oil-black rain hisses on the convoy tarp, the acid burning skin.",
       choices: [
         ch(
@@ -674,11 +677,15 @@ function specials(): GameEvent[] {
           80,
           [L("Seals hold. You wait it out."), { type: "time", days: 2 }],
           [
-            L("{randomLiving} failed to seal their compartment right, a shame they are so STUPID."),
+            L("{slot:sealer} failed to seal the compartments correctly, a shame they are so STUPID."),
             { type: "rad", delta: 26 },
-            { type: "damage", target: "all_living", amount: 16 },
+            { type: "damage", target: { slot: "sealer" }, amount: 16 },
             { type: "resource", key: "meds", delta: -3 },
           ],
+          undefined,
+          undefined,
+          undefined,
+          "sealer",
         ),
         ch(
           "sp1b",
@@ -698,7 +705,10 @@ function specials(): GameEvent[] {
       title: "Hot cache rumor",
       locations: ["abandoned_city", "industrial_strip"],
       weight: 0.55,
-      body: "{randomLiving} hears rumors of a nearby cache. Word is, another group is already heading there.",
+      body: "{randomLiving} hears rumors of a nearby cache. Word is, another group is already heading there. This could be a trap, and even if it isn't, it could be dangerous.",
+      memberSlots: [
+        slot("leader", "Who is leading the group?", "player_choice"),
+      ],
       choices: [
         ch(
           "sp2a",
@@ -717,6 +727,10 @@ function specials(): GameEvent[] {
             { type: "kill", target: "random_living" },
             { type: "damage", target: "all_living", amount: 18 },
           ],
+          undefined,
+          undefined,
+          "scavenge",
+          "leader",
         ),
         ch(
           "sp2b",
