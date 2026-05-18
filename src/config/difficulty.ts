@@ -1,20 +1,16 @@
-import type { DifficultyId, Friend, RunResources, TraitId } from "../types";
-import { NEGATIVE_TRAITS, TRAIT_CATALOG } from "../types";
+import type { DifficultyId, Friend, RunResources, SpecialtyId, TraitId } from "../types";
 import { mulberry32 } from "../engine/rng";
+import { assignSpecialties, rollTraits } from "./traits";
 
 export interface DifficultyConfig {
   label: string;
   years: number;
-  /** Starting caps for depot */
   startingCaps: number;
-  /** Base rations at run start (after depot) */
   baseRations: number;
-  baseWater: number;
   baseMeds: number;
   baseParts: number;
   baseFuel: number;
   encounterWeight: number;
-  /** Multiplier on daily ration burn while traveling */
   rationStress: number;
 }
 
@@ -23,11 +19,10 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyConfig> = {
     label: "Hard",
     years: 1.5,
     startingCaps: 750,
-    baseRations: 18,
-    baseWater: 18,
+    baseRations: 50,
     baseMeds: 4,
     baseParts: 5,
-    baseFuel: 8,
+    baseFuel: 28,
     encounterWeight: 1.25,
     rationStress: 1.2,
   },
@@ -35,11 +30,10 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyConfig> = {
     label: "Standard",
     years: 2,
     startingCaps: 1000,
-    baseRations: 24,
-    baseWater: 24,
+    baseRations: 72,
     baseMeds: 6,
     baseParts: 7,
-    baseFuel: 11,
+    baseFuel: 38,
     encounterWeight: 1,
     rationStress: 1,
   },
@@ -47,51 +41,19 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyConfig> = {
     label: "Easier",
     years: 3,
     startingCaps: 1250,
-    baseRations: 48,
-    baseWater: 48,
+    baseRations: 110,
     baseMeds: 8,
     baseParts: 8,
-    baseFuel: 16,
+    baseFuel: 55,
     encounterWeight: 0.88,
     rationStress: 0.88,
   },
 };
 
-/** Thousands of km — tuned so daily travel + encounters fill the departure budget on Standard */
 export const START_KM = 3500;
 
 export function daysFromYears(years: number): number {
   return Math.round(years * 365);
-}
-
-const NEG_SET = new Set<string>(NEGATIVE_TRAITS);
-
-/** 4–6 traits: mix of positive and at least one negative on average */
-export function rollTraitsForMember(rng: () => number): TraitId[] {
-  const count = 4 + Math.floor(rng() * 3);
-  const pool = [...TRAIT_CATALOG];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  const picked = pool.slice(0, count);
-  const negCount = picked.filter((t) => NEG_SET.has(t)).length;
-  if (negCount === 0) {
-    const swapIdx = picked.findIndex((t) => !NEG_SET.has(t));
-    const neg = NEGATIVE_TRAITS[Math.floor(rng() * NEGATIVE_TRAITS.length)];
-    if (swapIdx >= 0) picked[swapIdx] = neg;
-    else picked.push(neg);
-  }
-  return picked.slice(0, count);
-}
-
-export function rollPartyTraits(seed: number, partySize: number): TraitId[][] {
-  const out: TraitId[][] = [];
-  for (let i = 0; i < partySize; i++) {
-    const rng = mulberry32((seed + i * 0x9e3779b9) >>> 0);
-    out.push(rollTraitsForMember(rng));
-  }
-  return out;
 }
 
 export interface PartyScaling {
@@ -101,7 +63,6 @@ export interface PartyScaling {
   targetPressure: number;
 }
 
-/** Larger parties eat more and draw heavier encounter tables / embark checks. */
 export function partyScaling(partySize: number): PartyScaling {
   const delta = partySize - 4;
   return {
@@ -112,38 +73,47 @@ export function partyScaling(partySize: number): PartyScaling {
   };
 }
 
+/**
+ * Create a basic Friend with placeholder specialty/traits.
+ * Call makeParty() instead when building a full party so specialties are unique.
+ */
 export function makeFriend(
   id: string,
   name: string,
-  traits: TraitId[],
+  specialty: SpecialtyId = "combat",
+  traits: TraitId[] = [],
 ): Friend {
-  let maxBonus = 0;
-  let morale = 70;
-  for (const t of traits) {
-    if (t === "ironGut") maxBonus += 8;
-    if (t === "calm") morale += 10;
-    if (t === "lucky") morale += 4;
-    if (t === "pessimist") morale -= 12;
-    if (t === "reckless") morale += 6;
-    if (NEG_SET.has(t)) {
-      maxBonus -= 7;
-      morale -= 5;
-    }
-  }
-  const base = 100;
-  const mh = Math.max(72, base + maxBonus);
   return {
     id,
     name: name.trim() || "Unknown",
-    traits: [...traits],
-    health: mh,
-    maxHealth: mh,
-    morale: Math.max(25, Math.min(100, morale)),
+    health: 100,
+    maxHealth: 100,
+    morale: 70,
     status: "alive",
     sick: undefined,
     memberItems: [],
+    specialty,
+    traits,
   };
 }
+
+/**
+ * Create a full party of Friends with unique specialties and rolled traits.
+ * Specialties are assigned in seeded random order so no two members share one.
+ */
+export function makeParty(
+  members: { id: string; name: string }[],
+  seed: number,
+): Friend[] {
+  const specialties = assignSpecialties(members.length, seed);
+  return members.map((m, i) => {
+    const traits = rollTraits(seed ^ (i * 0x9e3779b9));
+    return makeFriend(m.id, m.name, specialties[i], traits);
+  });
+}
+
+// Kept for seeded name-shuffling at roster screen
+export { mulberry32 };
 
 export function validateRosterNames(names: string[]): string | null {
   for (const n of names) {
@@ -160,7 +130,6 @@ export function initialResources(
   const ps = partyScaling(partySize);
   return {
     rations: Math.round(d.baseRations * ps.rationMult),
-    water: Math.round(d.baseWater * ps.rationMult),
     meds: Math.max(2, Math.round(d.baseMeds * ps.rationMult)),
     parts: Math.max(3, Math.round(d.baseParts * ps.rationMult)),
     fuel: Math.max(4, Math.round(d.baseFuel * ps.rationMult)),

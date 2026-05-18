@@ -61,8 +61,7 @@ function StatCell(props: {
 
 export function RunStatsPanel(props: RunStatsPanelProps): ReactElement {
   const { floats } = props;
-  const lowRations =
-    props.resources.rations <= 5 || props.resources.water <= 5;
+  const lowRations = props.resources.rations <= 5;
 
   return (
     <div className="panel run-stats-panel">
@@ -144,13 +143,6 @@ export function RunStatsPanel(props: RunStatsPanelProps): ReactElement {
             statKey="rations"
             label="Rations"
             value={props.resources.rations}
-            floats={floats}
-            warn={lowRations}
-          />
-          <StatCell
-            statKey="water"
-            label="Water"
-            value={props.resources.water}
             floats={floats}
             warn={lowRations}
           />

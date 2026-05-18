@@ -14,12 +14,11 @@ const ROT: LocationId[] = [
 function ch(
   id: string,
   text: string,
-  trait: ChoiceDef["trait"],
-  basePct: number,
+  basePct: number | undefined,
   ok: Effect[],
   bad: Effect[],
 ): ChoiceDef {
-  return { id, text, trait, basePct, successEffects: ok, failureEffects: bad };
+  return { id, text, basePct, successEffects: ok, failureEffects: bad };
 }
 
 function travel(ev: Omit<GameEvent, "eventPool">): GameEvent {
@@ -34,23 +33,15 @@ export const CAPS_EVENTS: GameEvent[] = [
     choices: [
       ch(
         "cap1a",
-        "Play careful (small stake).",
-        "lucky",
+        "Play a hand.",
         50,
-        [
-          L("You walk away ahead."),
-          { type: "resource", key: "caps", delta: 55 },
-        ],
-        [
-          L("The deck was cold."),
-          { type: "resource", key: "caps", delta: -25 },
-        ],
+        [L("You walk away ahead."), { type: "resource", key: "caps", delta: 55 }],
+        [L("The deck was cold."), { type: "resource", key: "caps", delta: -25 }],
       ),
       ch(
         "cap1b",
         "Decline and move on.",
         undefined,
-        0,
         [L("No caps lost. No friends made.")],
         [],
       ),
@@ -61,12 +52,11 @@ export const CAPS_EVENTS: GameEvent[] = [
   travel({
     id: "cap-escort-job",
     title: "Escort offer",
-    body: "A trader offers caps to ride alongside your convoy for two days—claims bandits target loners.",
+    body: "A trader offers caps to ride alongside your convoy for two days — claims bandits target loners.",
     choices: [
       ch(
         "cap2a",
         "Accept the contract.",
-        "negotiator",
         55,
         [
           L("Payment on delivery to the junction."),
@@ -79,14 +69,7 @@ export const CAPS_EVENTS: GameEvent[] = [
           { type: "injure", target: "random_living" },
         ],
       ),
-      ch(
-        "cap2b",
-        "Refuse.",
-        undefined,
-        0,
-        [L("You keep your pace.")],
-        [],
-      ),
+      ch("cap2b", "Refuse.", undefined, [L("You keep your pace.")], []),
     ],
     weight: 0.4,
   }),
@@ -98,7 +81,6 @@ export const CAPS_EVENTS: GameEvent[] = [
       ch(
         "cap3a",
         "Sell spare parts.",
-        "negotiator",
         60,
         [
           L("Fair weight, fair price."),
@@ -111,14 +93,7 @@ export const CAPS_EVENTS: GameEvent[] = [
           { type: "resource", key: "caps", delta: 35 },
         ],
       ),
-      ch(
-        "cap3b",
-        "Keep the parts.",
-        undefined,
-        0,
-        [L("Metal stays with the convoy.")],
-        [],
-      ),
+      ch("cap3b", "Keep the parts.", undefined, [L("Metal stays with the convoy.")], []),
     ],
     locations: ROT,
     weight: 0.42,
@@ -131,8 +106,7 @@ export const CAPS_EVENTS: GameEvent[] = [
       ch(
         "cap4a",
         "Track and turn them in.",
-        "stalkerHunter",
-        40,
+        45,
         [
           L("Reward collected at the next checkpoint."),
           { type: "resource", key: "caps", delta: 95 },
@@ -143,14 +117,7 @@ export const CAPS_EVENTS: GameEvent[] = [
           { type: "morale", target: "all_living", delta: -8 },
         ],
       ),
-      ch(
-        "cap4b",
-        "Tear the notice down.",
-        undefined,
-        0,
-        [L("Not your problem.")],
-        [],
-      ),
+      ch("cap4b", "Tear the notice down.", undefined, [L("Not your problem.")], []),
     ],
     locations: ["port_sprawl", "dead_highway"],
     weight: 0.35,
@@ -158,12 +125,11 @@ export const CAPS_EVENTS: GameEvent[] = [
   travel({
     id: "cap-heirloom",
     title: "Family heirloom",
-    body: "A widow offers caps for safe passage to the port. She carries a sealed locket—won't say what's inside.",
+    body: "A widow offers caps for safe passage to the port. She carries a sealed locket — won't say what's inside.",
     choices: [
       ch(
         "cap5a",
         "Escort her.",
-        "calm",
         55,
         [
           L("She pays at the arcology fringe."),
@@ -192,73 +158,13 @@ export const CAPS_EVENTS: GameEvent[] = [
     weight: 0.4,
   }),
   travel({
-    id: "cap-gift-trader",
-    title: "Grateful trader",
-    body: "You shared water with a stranded trader last week—they remember. Today they flag you down with a pouch.",
-    requiresFlag: "shared_water_trader",
-    choices: [
-      ch(
-        "cap6a",
-        "Accept thanks.",
-        undefined,
-        0,
-        [
-          L("Caps and a personal charm."),
-          { type: "resource", key: "caps", delta: 50 },
-          { type: "grantPersonal", itemId: "pi_dog_tags_charm", target: "random_living" },
-        ],
-        [],
-      ),
-    ],
-    weight: 0.5,
-  }),
-  travel({
-    id: "cap-share-water",
-    title: "Stranded merchant",
-    body: "A merchant's cart is axle-deep in silt. Their water is gone; yours isn't.",
-    choices: [
-      ch(
-        "cap7a",
-        "Share water.",
-        undefined,
-        0,
-        [
-          L("They promise to remember."),
-          { type: "resource", key: "water", delta: -4 },
-          { type: "flag", key: "shared_water_trader", value: true },
-          { type: "morale", target: "all_living", delta: 5 },
-        ],
-        [],
-      ),
-      ch(
-        "cap7b",
-        "Trade water for caps now.",
-        "negotiator",
-        50,
-        [
-          L("Immediate payment."),
-          { type: "resource", key: "water", delta: -3 },
-          { type: "resource", key: "caps", delta: 40 },
-        ],
-        [
-          L("They haggle ugly."),
-          { type: "resource", key: "water", delta: -3 },
-          { type: "resource", key: "caps", delta: 15 },
-        ],
-      ),
-    ],
-    locations: ROT,
-    weight: 0.44,
-  }),
-  travel({
     id: "cap-sell-rations",
     title: "Hungry checkpoint",
-    body: "Guards at a pop-up checkpoint buy rations at inflated cap prices—illegal, but they're hungry.",
+    body: "Guards at a pop-up checkpoint buy rations at inflated cap prices — illegal, but they're hungry.",
     choices: [
       ch(
         "cap8a",
         "Sell a crate.",
-        "negotiator",
         55,
         [
           L("Caps change hands under a tarp."),
@@ -282,9 +188,8 @@ export const CAPS_EVENTS: GameEvent[] = [
     choices: [
       ch(
         "cap9a",
-        "Buy a vest for {randomLiving}.",
+        "Buy a vest for someone.",
         undefined,
-        0,
         [
           L("Caps spent; vest assigned."),
           { type: "resource", key: "caps", delta: -55 },
@@ -294,8 +199,7 @@ export const CAPS_EVENTS: GameEvent[] = [
       ),
       ch(
         "cap9b",
-        "Haggle down.",
-        "negotiator",
+        "Haggle the price down.",
         45,
         [
           L("Better price."),
@@ -306,5 +210,30 @@ export const CAPS_EVENTS: GameEvent[] = [
       ),
     ],
     weight: 0.32,
+  }),
+  travel({
+    id: "cap-trade-favor",
+    title: "Road favor",
+    body: "A stranded merchant needs rations. Their cart is buried in silt and their supplies are gone.",
+    choices: [
+      ch(
+        "capf1a",
+        "Share rations and ask for caps.",
+        50,
+        [
+          L("They pay a fair price and wave you on."),
+          { type: "resource", key: "rations", delta: -4 },
+          { type: "resource", key: "caps", delta: 40 },
+        ],
+        [
+          L("They have nothing. You fed them for free."),
+          { type: "resource", key: "rations", delta: -4 },
+          { type: "morale", target: "all_living", delta: 6 },
+        ],
+      ),
+      ch("capf1b", "Keep moving.", undefined, [L("Not your problem today.")], []),
+    ],
+    locations: ROT,
+    weight: 0.44,
   }),
 ];

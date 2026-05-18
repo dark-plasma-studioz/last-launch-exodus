@@ -1,46 +1,91 @@
 /**
- * eventChunks.ts — All game events.
+ * eventChunks.ts — All core game events.
  *
- * HOW TO ADD A NEW EVENT
- * ─────────────────────
- * 1. Pick a pool function below (or create a new one, then add to ALL_EVENTS).
- * 2. Copy an existing event block and change the id, title, body, and choices.
- * 3. Set `locations` to restrict where the event fires (omit for anywhere).
- * 4. For choice events: use ch() helper. For ambient events: use ambient() helper.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * HOW TO ADD AN EVENT
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * AUTHORING HELPERS
- * ─────────────────
- *  L("text")          → appendLog effect (flavor text in the log)
- *  ch(id, btn, trait, basePct, ok[], bad[], always?, requiredItem?)
- *  ambient(id, title, body, effects[], locations?, weight?)
+ * SIMPLE CHOICE EVENT
+ * ───────────────────
+ * Use the event() builder. Pass an array of ch() choices.
  *
- * BASE PERCENT GUIDE (basePct before party trait bonuses)
- *   65% = generous   50% = fair   35% = tough   20% = brutal
- *   Each trait-holder adds ~+12%. Party size adds up to +8%.
- *   Negative traits subtract up to -15% total.
+ *   event({
+ *     id: "my-event-id",
+ *     title: "Something happens",
+ *     body: "{randomLiving} spots movement on the ridge.",
+ *     locations: ["open_waste"],   // omit for anywhere
+ *     weight: 1.0,                 // default 1.0
+ *     choices: [
+ *       ch("fight",   "Fight them off",   45, [ok effects...], [fail effects...]),
+ *       ch("retreat", "Pull back",        undefined, [guaranteed ok...], []),
+ *     ],
+ *   })
+ *
+ * AMBIENT EVENT (no player choice)
+ * ─────────────────────────────────
+ *   ambient("id", "Title", "Body text.", [effects...], locations?, weight?)
+ *
+ * SPECIALTY CHECK
+ * ───────────────
+ * Add checkType to a ch() call to apply the relevant specialist's bonus:
+ *   ch("hack", "Hack the console", 40, ok, bad, undefined, undefined, "repair")
+ *                                                                        ^^^
+ *   checkType values: "combat" | "medical" | "scavenge" | "repair" | "negotiate" | "stealth"
+ *
+ * NAMED MEMBER SLOTS (member picker system)
+ * ─────────────────────────────────────────
+ * Named slots let you "hold" a reference to a member across multiple effects.
+ *
+ * 1. Declare slots on the event:
+ *      memberSlots: [slot("infiltrator", "Who infiltrates the camp?", "player_choice")]
+ *
+ * 2. Reference the slot in text:
+ *      body: "A camp is spotted. {slot:infiltrator} could sneak in.",
+ *      // After slot is filled, {slot:infiltrator} → that member's name
+ *
+ * 3. Attach the slot to a choice so clicking it shows the member picker first:
+ *      ch("sneak", "Send someone to infiltrate", 50, ok, bad,
+ *         undefined, undefined, "stealth", "infiltrator")  ← fillsSlot
+ *
+ * 4. Target effects at the slot member:
+ *      { type: "damage",  target: { slot: "infiltrator" }, amount: 20 }
+ *      { type: "injure",  target: { slot: "infiltrator" } }
+ *
+ * 5. Auto-fill slots (no player choice):
+ *      memberSlots: [slot("scout", "Who scouts?", "random_living")]
+ *      // Filled automatically when event fires.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * BASE PERCENT GUIDE
+ *   70% = generous   55% = fair   40% = tough   25% = brutal
  *
  * EFFECT QUICK REFERENCE
- *   { type: "resource", key: "rations", delta: -8 }
- *   { type: "damage", target: "random_living", amount: 25 }
- *   { type: "injure", target: "weakest" }          ← prefer this over kill
- *   { type: "kill", target: "random_living" }       ← use sparingly
- *   { type: "sicken", target: "random_living", sickness: "Gut fever", days: 7 }
- *   { type: "cure", target: "all_living" }
- *   { type: "rad", delta: 20 }
- *   { type: "morale", target: "all_living", delta: -10 }
- *   { type: "heal", target: "weakest", amount: 15 }
- *   { type: "km", delta: -18 }
- *   { type: "time", days: 4 }
- *   { type: "portChaos", delta: 8 }
- *   { type: "flag", key: "met_trader", value: true }
+ *   { type: "resource",    key: "rations", delta: -8 }
+ *   { type: "damage",      target: "random_living", amount: 25 }
+ *   { type: "damage",      target: { slot: "scout" }, amount: 25 }
+ *   { type: "injure",      target: "weakest" }
+ *   { type: "injure",      target: { slot: "infiltrator" } }
+ *   { type: "kill",        target: "random_living" }   ← use sparingly
+ *   { type: "sicken",      target: "random_living", sickness: "Gut fever", days: 7 }
+ *   { type: "rad",         delta: 20 }
+ *   { type: "morale",      target: "all_living", delta: -10 }
+ *   { type: "heal",        target: "weakest", amount: 15 }
+ *   { type: "km",          delta: -18 }
+ *   { type: "time",        days: 4 }
+ *   { type: "portChaos",   delta: 8 }
+ *   { type: "flag",        key: "met_trader", value: true }
+ *   { type: "fillSlot",    slot: "scout", how: "random_living" }
+ * ═══════════════════════════════════════════════════════════════════════════
  */
 
-import type { ChoiceDef, Effect, GameEvent, LocationId } from "../types";
+import type { CheckType, ChoiceDef, Effect, GameEvent, LocationId, MemberSlot } from "../types";
 import { CAPS_EVENTS } from "./capsEvents";
 
+// ── Shorthand effect builders ─────────────────────────────────────────────────
+
+/** appendLog effect */
 const L = (t: string): Effect => ({ type: "appendLog", text: t });
 
-/** Regions that appear during the road journey (not embark). */
 const ROT: LocationId[] = [
   "open_waste",
   "abandoned_city",
@@ -48,41 +93,88 @@ const ROT: LocationId[] = [
   "dead_highway",
 ];
 
-// ── ch() helper ───────────────────────────────────────────────────────────────
+// ── Authoring helpers ─────────────────────────────────────────────────────────
 
 /**
- * Build a ChoiceDef with a trait check.
- * Leave trait undefined for a guaranteed-success choice.
- * basePct is the base % before party bonuses are applied.
+ * Build a ChoiceDef.
+ *
+ * @param id          Unique choice id within this event.
+ * @param text        Button label shown to player.
+ * @param basePct     0–100 success %. Omit for guaranteed success.
+ * @param ok          Effects on success.
+ * @param bad         Effects on failure.
+ * @param always      Effects always applied regardless of outcome.
+ * @param requiredItem  itemId that must be in inventory, or undefined.
+ * @param checkType   CheckType that benefits this check (adds SPECIALTY_BONUS %).
+ * @param fillsSlot   Named slot key — shows member picker before resolving.
  */
 function ch(
   id: string,
   text: string,
-  trait: ChoiceDef["trait"],
-  basePct: number,
+  basePct: number | undefined,
   ok: Effect[],
   bad: Effect[],
   always?: Effect[],
   requiredItem?: string,
+  checkType?: CheckType,
+  fillsSlot?: string,
 ): ChoiceDef {
   return {
     id,
     text,
-    trait,
     basePct,
     successEffects: ok,
     failureEffects: bad,
     alwaysEffects: always,
     requiredItem,
+    checkType,
+    fillsSlot,
   };
 }
 
-// ── ambient() helper ──────────────────────────────────────────────────────────
+/**
+ * Build a MemberSlot declaration.
+ * @param key   Unique slot identifier (used in {slot:key} templates and effect targets).
+ * @param label Shown in member picker: "Who scouts ahead?".
+ * @param how   "player_choice" | "random_living" | "weakest"
+ */
+function slot(key: string, label: string, how: MemberSlot["how"] = "player_choice"): MemberSlot {
+  return { key, label, how };
+}
 
 /**
- * Build an ambient (no-choice) event.
- * Effects fire automatically when the player clicks Continue.
+ * Build a full choice-style GameEvent.
+ * Most fields are optional — only id, title, body, and choices are required.
  */
+function event(opts: {
+  id: string;
+  title: string;
+  body: string;
+  choices: ChoiceDef[];
+  locations?: LocationId[];
+  weight?: number;
+  minKm?: number;
+  maxKm?: number;
+  requiresFlag?: string;
+  memberSlots?: MemberSlot[];
+  eventPool?: "travel" | "scavenge";
+}): GameEvent {
+  return {
+    id: opts.id,
+    kind: "choice",
+    eventPool: opts.eventPool ?? "travel",
+    title: opts.title,
+    body: opts.body,
+    choices: opts.choices,
+    locations: opts.locations,
+    weight: opts.weight ?? 1.0,
+    minKm: opts.minKm,
+    maxKm: opts.maxKm,
+    requiresFlag: opts.requiresFlag,
+    memberSlots: opts.memberSlots,
+  };
+}
+
 function ambient(
   id: string,
   title: string,
@@ -104,32 +196,21 @@ function ambient(
 }
 
 // ── Ambient pool ──────────────────────────────────────────────────────────────
-//
-// Passive encounters: no player decision. Mix of windfalls and mild setbacks.
-// These keep the journey feeling alive without demanding constant choices.
 
 function ambientPool(): GameEvent[] {
   return [
     ambient(
       "amb-found-rations",
       "Cache of rations",
-      "{randomLiving} found a small camp with supplies just off the road! {randomLiving} pries them open to find food!",
+      "{randomLiving} finds a small camp with supplies just off the road and pries them open.",
       [L("Extra food loaded."), { type: "resource", key: "rations", delta: 6 }],
       ["abandoned_city", "industrial_strip", "dead_highway"],
       0.6,
     ),
     ambient(
-      "amb-found-water",
-      "Rain catchment",
-      "Rains bring water into collection basin.",
-      [L("+water collected."), { type: "resource", key: "water", delta: 7 }],
-      ["open_waste", "abandoned_city", "dead_highway"],
-      0.55,
-    ),
-    ambient(
       "amb-found-fuel",
-      "Buried jerrycan",
-      "Digging a latrine trench, {randomLiving} hits metal. Three jerrycans of ethanol mix - old, but it does work...",
+      "Buried jerrycans",
+      "Digging a latrine trench, {randomLiving} hits metal — three jerrycans of ethanol mix.",
       [L("Fuel recovered from beneath the dirt."), { type: "resource", key: "fuel", delta: 5 }],
       ["dead_highway", "industrial_strip"],
       0.45,
@@ -137,7 +218,7 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-found-meds",
       "Aid station remnants",
-      "{randomLiving} finds a collapsed field aid post. Most supplies rotted, but a sealed pouch of antibiotics is intact.",
+      "{randomLiving} finds a collapsed field aid post. Most supplies rotted, but a sealed pouch is intact.",
       [L("Medical supplies salvaged."), { type: "resource", key: "meds", delta: 3 }],
       ["abandoned_city", "port_sprawl"],
       0.4,
@@ -145,9 +226,9 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-broken-leg",
       "Stumble on rubble",
-      "{randomLiving} trips hard and breaks their leg. What a loser.",
+      "{randomLiving} trips hard and goes down — bad sprain, maybe worse.",
       [
-        L("{randomLiving} is hurt, better be careful with them."),
+        L("{randomLiving} is hurt. Watch them carefully."),
         { type: "injure", target: "random_living" },
         { type: "morale", target: "all_living", delta: -6 },
       ],
@@ -157,7 +238,7 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-rad-pocket",
       "Hot pocket",
-      "The Geiger counter spikes. No warning, no landmark, just a buried hot spot in the road.",
+      "No warning, no landmark — just a buried hot spot in the road. Everyone absorbs a dose.",
       [
         L("Rads absorbed. Move quickly."),
         { type: "rad", delta: 14 },
@@ -169,7 +250,7 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-morale-sunrise",
       "Burning sky",
-      "The sky burns with the remnants of the explosions. It looks cool I guess.",
+      "The sky burns with beautiful post-war light. Nobody says anything. Nobody has to.",
       [
         L("A moment of strange beauty."),
         { type: "morale", target: "all_living", delta: 15 },
@@ -180,7 +261,7 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-supply-rot",
       "Spoiled rations",
-      "{randomLiving} forgot to seal the food after going for a midnight snack. 3 rations are spoiled and moldy. Great job.",
+      "{randomLiving} forgot to seal the food. Three rations are moldy. Great job.",
       [
         L("Rations spoiled and discarded."),
         { type: "resource", key: "rations", delta: -3 },
@@ -192,7 +273,7 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-minor-breakdown",
       "Seized belt drive",
-      "STUPID CAR! {randomLiving}, what happened? We are so screwed.",
+      "The convoy grinds to a halt. {randomLiving} digs out the toolbox with a sigh.",
       [
         L("Parts burned keeping the convoy moving."),
         { type: "transport", delta: -6 },
@@ -204,7 +285,7 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-salvage-caps",
       "Looted register",
-      "{randomLiving} loots a dead body. Finds caps somehow. Always loot your bodies kids.",
+      "{randomLiving} searches a dead body. Finds caps somehow. Always loot your bodies.",
       [L("Caps recovered."), { type: "resource", key: "caps", delta: 35 }],
       ["abandoned_city", "industrial_strip"],
       0.4,
@@ -212,7 +293,7 @@ function ambientPool(): GameEvent[] {
     ambient(
       "amb-sick-contact",
       "Coughing stranger",
-      "Sick guy roams up to the convoy door and bursts in looking for help. It's Covid all over again...",
+      "A sick wanderer climbs into the convoy looking for help. Possible exposure for everyone.",
       [
         L("Possible exposure. Watch for symptoms."),
         { type: "sicken", target: "random_living", sickness: "Ash lung", days: 8 },
@@ -221,23 +302,11 @@ function ambientPool(): GameEvent[] {
       0.3,
     ),
     ambient(
-      "amb-gut-water",
-      "Suspect water source",
-      "The drums ran low and someone filled from an unverified cistern. It was not a good idea.",
-      [
-        L("Gut infection spreading."),
-        { type: "resource", key: "water", delta: 4 },
-        { type: "sicken", target: "random_living", sickness: "Gut fever", days: 7 },
-      ],
-      ["open_waste", "dead_highway"],
-      0.3,
-    ),
-    ambient(
       "amb-storm-delay",
       "Dust wall",
-      "A brown wall of grit swallows the road for hours. Needles in every crevice. You wait it out sealed tight.",
+      "A brown wall of grit swallows the road for hours. You wait it out sealed tight.",
       [
-        L("Storm costs a day and some rads."),
+        L("Storm costs time and rads."),
         { type: "time", days: 2 },
         { type: "rad", delta: 8 },
       ],
@@ -246,10 +315,10 @@ function ambientPool(): GameEvent[] {
     ),
     ambient(
       "amb-refugee-trade",
-      "Roadside trade",
-      "Two little buggers from a camp nearby steals some parts. Luckily, {randomLiving} has no problem beating up a child. Stragler had some meds on him.",
+      "Roadside deal",
+      "Two stragglers swap meds for parts near the road. {randomLiving} jumps in.",
       [
-        L("Traded parts for medicine."),
+        L("Parts traded for medicine."),
         { type: "resource", key: "meds", delta: 3 },
         { type: "resource", key: "parts", delta: -3 },
       ],
@@ -257,21 +326,9 @@ function ambientPool(): GameEvent[] {
       0.4,
     ),
     ambient(
-      "amb-heat-exhaustion",
-      "Heat collapse",
-      "Heat stroke. {randomLiving} couldn't take it and chugs as much water as they can.",
-      [
-        L("{randomLiving} needs water and shade."),
-        { type: "damage", target: "random_living", amount: 12 },
-        { type: "resource", key: "water", delta: -3 },
-      ],
-      ["open_waste", "dead_highway"],
-      0.35,
-    ),
-    ambient(
       "amb-lucky-caps",
       "Scattered loot",
-      "A wrecked scavenger rig spilled its cargo. Most of it is ash, but the cap-belt survived.",
+      "A wrecked scavenger rig spilled its cargo. Most is ash, but the cap-belt survived.",
       [L("Caps recovered from the wreck."), { type: "resource", key: "caps", delta: 55 }],
       ["open_waste", "dead_highway"],
       0.3,
@@ -280,133 +337,38 @@ function ambientPool(): GameEvent[] {
       "amb-morale-song",
       "An old song",
       "Someone starts humming something from before. Nobody remembers the words, but everyone knows the tune.",
-      [
-        L("The melody carries for an hour."),
-        { type: "morale", target: "all_living", delta: 10 },
-      ],
+      [L("The melody carries for an hour."), { type: "morale", target: "all_living", delta: 10 }],
       undefined,
       0.4,
+    ),
+    ambient(
+      "amb-found-parts",
+      "Scattered wreckage",
+      "{randomLiving} spots useful components in a burned-out convoy along the road.",
+      [L("Machine parts recovered."), { type: "resource", key: "parts", delta: 4 }],
+      ROT,
+      0.35,
     ),
   ];
 }
 
-// ── Sickness events (choice events that involve contagion) ────────────────────
+// ── Sickness events ───────────────────────────────────────────────────────────
 
 function sicknessEvents(): GameEvent[] {
   return [
-    {
-      id: "sick-tainted-spring",
-      title: "Tainted spring",
-      locations: ["open_waste", "industrial_strip"],
-      weight: 0.4,
-      body: "A spring flows clear and cold. {randomLiving} want to drink immediately. {best_medic} eyes it with suspicion.",
-      choices: [
-        ch(
-          "sts-a",
-          "Boil and filter carefully (takes time).",
-          "medic",
-          55,
-          [
-            L("{best_medic} treats the water properly. Safe enough."),
-            { type: "resource", key: "water", delta: 10 },
-            { type: "time", days: 2 },
-          ],
-          [
-            L("Something survives the boil. Stomach cramps that night."),
-            { type: "resource", key: "water", delta: 8 },
-            { type: "sicken", target: "random_living", sickness: "Gut fever", days: 6 },
-          ],
-        ),
-        ch(
-          "sts-b",
-          "Fill the drums and move on without boiling.",
-          undefined,
-          0,
-          [
-            L("Everyone drinks. It tastes fine. You'll know in 48 hours."),
-            { type: "resource", key: "water", delta: 14 },
-            { type: "sicken", target: "random_living", sickness: "Gut fever", days: 7 },
-          ],
-          [],
-        ),
-        ch(
-          "sts-c",
-          "Leave it. The risk is not worth it.",
-          "calm",
-          55,
-          [L("{specialist} talks people down from the water. Smart call.")],
-          [
-            L("Consensus fails, {randomLiving} sneaks back."),
-            { type: "resource", key: "water", delta: 4 },
-            { type: "sicken", target: "random_living", sickness: "Gut fever", days: 8 },
-          ],
-        ),
-      ],
-    },
-    {
-      id: "sick-refugee-nurse",
-      title: "Sick refugee",
-      locations: ["port_sprawl", "dead_highway"],
-      weight: 0.38,
-      body: "A woman waves from a ditch—barely standing, feverish, wearing faction colours that don't matter anymore. She's asking for water.",
-      choices: [
-        ch(
-          "srn-a",
-          "Help her—share water and a med.",
-          "medic",
-          45,
-          [
-            L("{best_medic} stabilises her. She gives you whatever she had."),
-            { type: "resource", key: "water", delta: -3 },
-            { type: "resource", key: "meds", delta: -1 },
-            { type: "resource", key: "caps", delta: 40 },
-            { type: "morale", target: "all_living", delta: 6 },
-          ],
-          [
-            L("You try your best. The fever spreads anyway."),
-            { type: "resource", key: "water", delta: -3 },
-            { type: "resource", key: "meds", delta: -2 },
-            { type: "sicken", target: "random_living", sickness: "Road fever", days: 7 },
-          ],
-        ),
-        ch(
-          "srn-b",
-          "Toss water from distance and drive on.",
-          undefined,
-          0,
-          [
-            L("Clean conscience, uncertain safety."),
-            { type: "resource", key: "water", delta: -2 },
-          ],
-          [],
-        ),
-        ch(
-          "srn-c",
-          "Keep moving. Can't afford it.",
-          "calm",
-          50,
-          [L("Hard call. {specialist} reminds the party why.")],
-          [
-            L("Guilt eats the evening."),
-            { type: "morale", target: "all_living", delta: -8 },
-          ],
-        ),
-      ],
-    },
     {
       id: "sick-rat-stores",
       title: "Rat infiltration",
       locations: ROT,
       weight: 0.42,
-      body: "Night sounds: scratching, gnawing. At dawn the rations crate is chewed through and the rats are gone — leaving something else behind.",
+      body: "Night sounds: scratching, gnawing. At dawn the rations crate is chewed through and the rats are gone — leaving something behind.",
       choices: [
         ch(
           "srs-a",
           "Burn the contaminated stock and eat the loss.",
-          "medic",
-          55,
+          60,
           [
-            L("{best_medic} separates the gnawed from the clean. You eat half what you hoped."),
+            L("The gnawed bundles are separated. You eat less but stay healthy."),
             { type: "resource", key: "rations", delta: -6 },
           ],
           [
@@ -419,7 +381,6 @@ function sicknessEvents(): GameEvent[] {
           "srs-b",
           "Eat the gnawed rations — waste nothing.",
           undefined,
-          0,
           [
             L("You eat and wait. Maybe nothing happens."),
             { type: "sicken", target: "random_living", sickness: "Rat fever", days: 8 },
@@ -433,15 +394,14 @@ function sicknessEvents(): GameEvent[] {
       title: "Rad cough",
       locations: ["industrial_strip", "open_waste"],
       weight: 0.38,
-      body: "{randomLiving} has been coughing metallic phlegm for two days. The rads are ticking. {best_medic} looks worried.",
+      body: "{randomLiving} has been coughing metallic phlegm for two days. The rads are ticking.",
       choices: [
         ch(
           "src-a",
           "Rest a day and push meds.",
-          "medic",
-          50,
+          55,
           [
-            L("{best_medic} slows the progression. For now."),
+            L("Rest slows the progression. For now."),
             { type: "resource", key: "meds", delta: -3 },
             { type: "time", days: 2 },
           ],
@@ -454,14 +414,45 @@ function sicknessEvents(): GameEvent[] {
         ),
         ch(
           "src-b",
-          "Keep marching — there's no time.",
+          "Keep marching — there is no time.",
           undefined,
-          0,
           [
             L("They keep up. For now."),
             { type: "rad", delta: 5 },
             { type: "sicken", target: "weakest", sickness: "Rad lung", days: 10 },
           ],
+          [],
+        ),
+      ],
+    },
+    {
+      id: "sick-fevercamp",
+      title: "Fever camp",
+      locations: ["dead_highway", "port_sprawl"],
+      weight: 0.35,
+      body: "A camp of people burning with fever blocks the road. They beg for medicine. Some of them are clearly contagious.",
+      choices: [
+        ch(
+          "sf-a",
+          "Help them — share two meds.",
+          50,
+          [
+            L("They recover enough to wave you on. One leaves a pouch of caps."),
+            { type: "resource", key: "meds", delta: -2 },
+            { type: "resource", key: "caps", delta: 40 },
+            { type: "morale", target: "all_living", delta: 8 },
+          ],
+          [
+            L("The fever spreads before you can leave."),
+            { type: "resource", key: "meds", delta: -2 },
+            { type: "sicken", target: "random_living", sickness: "Road fever", days: 7 },
+          ],
+        ),
+        ch(
+          "sf-b",
+          "Drive around and keep moving.",
+          undefined,
+          [L("No exposure. No delay. Guilt is free.")],
           [],
         ),
       ],
@@ -484,8 +475,7 @@ function embarkPool(): GameEvent[] {
   ];
   for (let i = 0; i < 14; i++) {
     const t = titles[i % titles.length];
-    // Difficulty steps upward as embark progresses
-    const baseDiff = Math.max(0, Math.floor(i / 3));
+    const escalation = Math.max(0, Math.floor(i / 3));
     out.push({
       id: `emb-${i}`,
       title: `${t} (${i + 1})`,
@@ -495,10 +485,9 @@ function embarkPool(): GameEvent[] {
       choices: [
         ch(
           `e${i}a`,
-          "Talk your way into the correct line.",
-          "negotiator",
-          40 - baseDiff * 5,
-          [L("{specialist} bluffs the queue into coherence."), { type: "portChaos", delta: -4 }],
+          "Talk your way through.",
+          Math.max(20, 50 - escalation * 5),
+          [L("You bluff the queue into coherence."), { type: "portChaos", delta: -4 }],
           [
             L("Wrong line. A baton finds ribs."),
             { type: "damage", target: "random_living", amount: 20 },
@@ -509,9 +498,8 @@ function embarkPool(): GameEvent[] {
         ),
         ch(
           `e${i}b`,
-          "Hold formation—tight, quiet, fast.",
-          "calm",
-          45 - baseDiff * 5,
+          "Hold formation — tight, quiet, fast.",
+          Math.max(20, 45 - escalation * 5),
           [L("You slide through a gap that only existed for seconds.")],
           [
             L("Panic wins. Someone goes down."),
@@ -523,14 +511,13 @@ function embarkPool(): GameEvent[] {
         ch(
           `e${i}c`,
           "Forge a stamp (risky).",
-          "negotiator",
           20,
           [
             L("The laminate gleams just enough. A bored clerk waves you on."),
             { type: "flag", key: "forge_kit_used", value: true },
           ],
           [
-            L("Security tags the forgery. Dogs, then running. Someone doesn't make it out."),
+            L("Security tags the forgery. Dogs, then running. Someone doesn't make it."),
             { type: "kill", target: "random_living" },
             { type: "portChaos", delta: 16 },
             { type: "resource", key: "caps", delta: -40 },
@@ -573,9 +560,8 @@ function wastelandBulk(): GameEvent[] {
     const spot = spots[i % spots.length];
     const th = threats[i % threats.length];
     const loc = ROT[i % ROT.length];
-    // Cycle basePct across a range so events feel varied
-    const pctA = [55, 50, 45, 40, 35][i % 5];
-    const pctB = [50, 45, 40, 35, 30][i % 5];
+    const pctA = [60, 55, 50, 45, 40][i % 5];
+    const pctB = [55, 50, 45, 40, 35][i % 5];
     out.push({
       id: `wl-${i}`,
       title: `Road beat — ${spot}`,
@@ -585,8 +571,7 @@ function wastelandBulk(): GameEvent[] {
       choices: [
         ch(
           `wl${i}a`,
-          "Detour wide (costs days, may save bodies).",
-          "navigator",
+          "Detour wide (costs time, may save bodies).",
           pctA,
           [
             L("The detour is ugly but empty."),
@@ -603,10 +588,9 @@ function wastelandBulk(): GameEvent[] {
         ch(
           `wl${i}b`,
           "Push straight through.",
-          "scavenger",
           pctB,
           [
-            L("{specialist} finds a rabbit-path between wrecks."),
+            L("{randomLiving} finds a rabbit-path between wrecks."),
             { type: "km", delta: -10 },
           ],
           [
@@ -618,11 +602,10 @@ function wastelandBulk(): GameEvent[] {
         ),
         ch(
           `wl${i}c`,
-          "Camp, boil water, listen.",
-          "medic",
-          80,
+          "Make camp and wait it out.",
+          75,
           [
-            L("{best_medic} keeps fevers down."),
+            L("Bodies recover a little. The threat drifts past."),
             { type: "heal", target: "weakest", amount: 14 },
             { type: "time", days: 2 },
           ],
@@ -651,13 +634,12 @@ function approachBulk(): GameEvent[] {
       weight: 1.05,
       minKm: 0,
       maxKm: 900,
-      body: "The sky bruises toward the spaceport arcology. Checkpoints multiply. {best_navigator} studies routes while {randomLiving} counts rations again.",
+      body: "The sky bruises toward the spaceport arcology. Checkpoints multiply. {randomLiving} counts rations again.",
       choices: [
         ch(
           `ap${i}a`,
           "Bribe a checkpoint with parts.",
-          "negotiator",
-          45,
+          50,
           [
             L("Grease works until the next booth."),
             { type: "resource", key: "parts", delta: -5 },
@@ -672,11 +654,10 @@ function approachBulk(): GameEvent[] {
         ),
         ch(
           `ap${i}b`,
-          "Sneak a maintenance tunnel.",
-          "mechanic",
+          "Find a service tunnel and slip through.",
           40,
           [
-            L("{best_mechanic} knows which bolts lie."),
+            L("{randomLiving} knows which bolts lie. You cut past the checkpoint."),
             { type: "km", delta: -20 },
           ],
           [
@@ -689,10 +670,9 @@ function approachBulk(): GameEvent[] {
         ch(
           `ap${i}c`,
           "Signal flare: call in a favor (needs flare).",
-          "negotiator",
-          55,
+          60,
           [
-            L("A drone winks once—an escort window opens."),
+            L("A drone winks once — an escort window opens."),
             { type: "km", delta: -30 },
             { type: "portChaos", delta: -8 },
           ],
@@ -724,12 +704,8 @@ function specials(): GameEvent[] {
         ch(
           "sp1a",
           "Seal the wagons and wait it out.",
-          "mechanic",
-          75,
-          [
-            L("{best_mechanic} rigs seals with wax and spite."),
-            { type: "time", days: 4 },
-          ],
+          70,
+          [L("Seals hold. You wait it out."), { type: "time", days: 4 }],
           [
             L("Seals fail. Skin burns."),
             { type: "rad", delta: 26 },
@@ -739,9 +715,8 @@ function specials(): GameEvent[] {
         ),
         ch(
           "sp1b",
-          "March anyway.",
-          "ironGut",
-          60,
+          "March anyway — no time to stop.",
+          50,
           [L("Guts hold. Barely."), { type: "rad", delta: 10 }],
           [
             L("Someone collapses in the rain."),
@@ -756,22 +731,19 @@ function specials(): GameEvent[] {
       title: "Hot cache rumor",
       locations: ["abandoned_city", "industrial_strip"],
       weight: 0.55,
-      body: "{randomLiving} hears rumors of a cache of supplies. Sounds like a few groups are planning to get it. {randomLiving} thinks that we can get it first...",
+      body: "{randomLiving} hears rumors of a nearby cache. Word is, another group is already heading there.",
       choices: [
         ch(
           "sp2a",
-          "Raid fast.",
-          "stalkerHunter",
-          75,
+          "Move fast and grab it first.",
+          65,
           [
-            L("You pull meds, parts, food, water, and some fuel from the frost, {best_stalkerHunter} uses some some of it to light the place up, killing the group chasing behind."),
+            L("You pull meds, parts, food, and fuel. The other group arrives to nothing."),
             { type: "resource", key: "meds", delta: 9 },
-            { type: "resource", key: "fuel", delta: 6},
-            { type: "resource", key: "rations", delta: 10},
-            { type: "resource", key: "water", delta: 10},
+            { type: "resource", key: "fuel", delta: 6 },
+            { type: "resource", key: "rations", delta: 10 },
             { type: "portChaos", delta: 6 },
-            { type: "morale", target: "all_living", delta: 25},
-            { type: "item", itemId: "pi_armour_vest" , count: 1},
+            { type: "morale", target: "all_living", delta: 20 },
           ],
           [
             L("Bait. Snipers. You scatter and someone doesn't come back."),
@@ -781,11 +753,10 @@ function specials(): GameEvent[] {
         ),
         ch(
           "sp2b",
-          "Walk away.",
-          "calm",
-          65,
-          [L("It's no worth the risk, is it?")],
-          [{ type: "morale", target: "all_living", delta: -5 }],
+          "Walk away — not worth the risk.",
+          undefined,
+          [L("The cautious choice. Nothing gained, nothing lost.")],
+          [],
         ),
       ],
     },
@@ -795,13 +766,12 @@ function specials(): GameEvent[] {
       locations: ["port_sprawl", "dead_highway"],
       weight: 0.52,
       maxKm: 900,
-      body: "They wear mirrored masks and beg you to burn your maps as offerings. {best_navigator} sweats.",
+      body: "They wear mirrored masks and beg you to burn your maps as offerings.",
       choices: [
         ch(
           "sp3a",
-          "Lie that you already burned them.",
-          "negotiator",
-          40,
+          "Lie — claim you already burned them.",
+          45,
           [L("They love a good story more than truth.")],
           [
             L("They search the wagons. You resist; someone takes a cut."),
@@ -811,15 +781,11 @@ function specials(): GameEvent[] {
         ),
         ch(
           "sp3b",
-          "Trade rations for passage.",
-          "negotiator",
-          60,
+          "Trade rations for safe passage.",
+          65,
+          [L("Cheap religion, expensive rations."), { type: "resource", key: "rations", delta: -12 }],
           [
-            L("Cheap religion, expensive rice."),
-            { type: "resource", key: "rations", delta: -12 },
-          ],
-          [
-            L("They want more than rice. The standoff gets ugly."),
+            L("They want more than rations. The standoff gets ugly."),
             { type: "injure", target: "random_living" },
             { type: "time", days: 3 },
           ],
@@ -831,17 +797,13 @@ function specials(): GameEvent[] {
       title: "Autonomous sweep",
       locations: ["open_waste", "industrial_strip", "dead_highway"],
       weight: 0.5,
-      body: "A cheap autonomous recon swarm from an old war passes overhead, still executing its last orders. It sees the convoy.",
+      body: "A cheap autonomous recon swarm passes overhead, still executing its last orders. It sees the convoy.",
       choices: [
         ch(
           "sp4a",
-          "Hold still—let it scan and pass.",
-          "calm",
-          50,
-          [
-            L("It classifies you as low-threat and banks away."),
-            { type: "morale", target: "all_living", delta: 5 },
-          ],
+          "Hold still — let it scan and pass.",
+          55,
+          [L("It classifies you as low-threat and banks away."), { type: "morale", target: "all_living", delta: 5 }],
           [
             L("A trigger flag fires one last strike package."),
             { type: "damage", target: "all_living", amount: 20 },
@@ -851,66 +813,14 @@ function specials(): GameEvent[] {
         ),
         ch(
           "sp4b",
-          "Jam it (needs engineer).",
-          "engineer",
+          "Kill the drone with a parts sacrifice.",
           40,
+          [L("You fry the transponder. It drops into a field."), { type: "resource", key: "parts", delta: -2 }],
           [
-            L("{specialist} fries the transponder. It drops into a field."),
-            { type: "resource", key: "parts", delta: -2 },
-          ],
-          [
-            L("Jamming spikes the IFF. It stops trying to be subtle."),
+            L("Jamming spikes the IFF. It stops being subtle."),
             { type: "damage", target: "random_living", amount: 30 },
             { type: "injure", target: "random_living" },
           ],
-        ),
-      ],
-    },
-    {
-      id: "sp-water-trade",
-      title: "Caravan water market",
-      locations: ["dead_highway", "port_sprawl"],
-      weight: 0.48,
-      body: "A convoy is selling purified water at extortionate rates. A queue of desperate buyers stretches back half a kilometre.",
-      choices: [
-        ch(
-          "sp5a",
-          "Buy at their price.",
-          undefined,
-          0,
-          [
-            L("Clean water, ugly price tag."),
-            { type: "resource", key: "water", delta: 12 },
-            { type: "resource", key: "caps", delta: -55 },
-          ],
-          [],
-        ),
-        ch(
-          "sp5b",
-          "Negotiate a better rate.",
-          "negotiator",
-          45,
-          [
-            L("{specialist} shaves the price to something almost fair."),
-            { type: "resource", key: "water", delta: 12 },
-            { type: "resource", key: "caps", delta: -30 },
-          ],
-          [
-            L("They laugh and quote a higher price as insult tax."),
-            { type: "resource", key: "caps", delta: -70 },
-            { type: "resource", key: "water", delta: 10 },
-          ],
-        ),
-        ch(
-          "sp5c",
-          "Skip it. Ration what you have.",
-          undefined,
-          0,
-          [
-            L("No clean water today. You manage."),
-            { type: "morale", target: "all_living", delta: -5 },
-          ],
-          [],
         ),
       ],
     },
@@ -919,13 +829,12 @@ function specials(): GameEvent[] {
       title: "Medicine for maps",
       locations: ["open_waste", "abandoned_city"],
       weight: 0.45,
-      body: "A field surgeon outside a collapsed settlement is trading detailed regional maps for medicines. Paper is expensive here.",
+      body: "A field surgeon is trading detailed regional maps for medicines. Paper is expensive out here.",
       choices: [
         ch(
           "sp6a",
           "Trade meds for the maps.",
           undefined,
-          0,
           [
             L("The maps look genuine. Quality intel."),
             { type: "resource", key: "meds", delta: -3 },
@@ -936,16 +845,15 @@ function specials(): GameEvent[] {
         ),
         ch(
           "sp6b",
-          "Check the maps before paying.",
-          "navigator",
-          50,
+          "Inspect the maps before paying.",
+          55,
           [
-            L("{best_navigator} confirms they're worth the price."),
+            L("You confirm they're worth the price."),
             { type: "resource", key: "meds", delta: -2 },
             { type: "km", delta: -25 },
           ],
           [
-            L("They're outdated. Decent enough, not worth the meds paid."),
+            L("They're outdated. Not worth the meds."),
             { type: "resource", key: "meds", delta: -2 },
             { type: "time", days: 2 },
           ],
@@ -954,77 +862,156 @@ function specials(): GameEvent[] {
           "sp6c",
           "Keep the meds. Move on.",
           undefined,
-          0,
           [L("Meds stay in the kit. The surgeon watches you leave.")],
           [],
         ),
       ],
     },
-    {
+    // ── Convoy raid — fight back uses combat specialty ─────────────────────────
+    event({
       id: "sp-convoy-attack",
       title: "Scavenger raid",
       locations: ROT,
       weight: 0.55,
-      body: "Engine sounds from both sides of the road. They fly no flag and drive stripped rigs. {randomLiving} reaches for a weapon.",
+      body: "Engine sounds from both sides of the road. Stripped rigs, no flag. {randomLiving} reaches for a weapon.",
       choices: [
         ch(
           "sp7a",
           "Scatter and speed through.",
-          "navigator",
-          45,
-          [
-            L("{best_navigator} finds a gap and you gun it through."),
+          50,
+          [L("You find a gap and gun it through."),
             { type: "resource", key: "fuel", delta: -4 },
-            { type: "km", delta: -8 },
-          ],
-          [
-            L("They flank you. Side impact—{randomLiving} is hurt."),
+            { type: "km", delta: -8 }],
+          [L("They flank you. Side impact."),
             { type: "injure", target: "random_living" },
             { type: "resource", key: "fuel", delta: -3 },
-            { type: "transport", delta: -8 },
-          ],
+            { type: "transport", delta: -8 }],
         ),
         ch(
           "sp7b",
           "Fight back.",
-          "stalkerHunter",
           40,
-          [
-            L("{specialist} drops the lead driver. They scatter."),
+          [L("You drop the lead driver. They scatter."),
             { type: "resource", key: "caps", delta: 40 },
-            { type: "morale", target: "all_living", delta: 8 },
-          ],
-          [
-            L("Outnumbered and outgunned."),
+            { type: "morale", target: "all_living", delta: 8 }],
+          [L("Outnumbered and outgunned."),
             { type: "damage", target: "random_living", amount: 30 },
             { type: "injure", target: "weakest" },
-            { type: "resource", key: "rations", delta: -10 },
-          ],
+            { type: "resource", key: "rations", delta: -10 }],
+          undefined, undefined, "combat",
         ),
         ch(
           "sp7c",
-          "Give them a share—buy safe passage.",
-          "negotiator",
-          50,
-          [
-            L("They're practical bandits; they take the offer."),
+          "Negotiate — give them a share.",
+          55,
+          [L("They're practical. They take the offer and wave you through."),
             { type: "resource", key: "rations", delta: -8 },
-            { type: "resource", key: "caps", delta: -30 },
-          ],
-          [
-            L("They take the offering and take more."),
+            { type: "resource", key: "caps", delta: -30 }],
+          [L("They take the offering and take more."),
             { type: "resource", key: "rations", delta: -14 },
             { type: "resource", key: "meds", delta: -3 },
-            { type: "damage", target: "random_living", amount: 16 },
-          ],
+            { type: "damage", target: "random_living", amount: 16 }],
+          undefined, undefined, "negotiate",
         ),
       ],
-    },
+    }),
+
+    // ── Bandit camp — infiltrator chosen by player, slot persists across effects ─
+    event({
+      id: "sp-bandit-camp",
+      title: "Fortified camp",
+      locations: ["open_waste", "abandoned_city", "industrial_strip"],
+      weight: 0.45,
+      memberSlots: [
+        slot("infiltrator", "Who sneaks into the camp?", "player_choice"),
+      ],
+      body: "A stockaded camp sits two hundred metres off the road. Armed figures, a cook-fire, and what looks like stolen supplies. {randomLiving} marks it on the map.",
+      choices: [
+        ch(
+          "sbc-sneak",
+          "Send someone to infiltrate the camp",
+          50,
+          [
+            L("{slot:infiltrator} slips through the perimeter. They return with supplies and intel."),
+            { type: "resource", key: "rations", delta: 12 },
+            { type: "resource", key: "parts", delta: 3 },
+            { type: "resource", key: "caps", delta: 50 },
+            { type: "morale", target: "all_living", delta: 8 },
+          ],
+          [
+            L("{slot:infiltrator} is caught. They manage to escape, but barely."),
+            { type: "injure", target: { slot: "infiltrator" } },
+            { type: "morale", target: "all_living", delta: -12 },
+            { type: "time", days: 2 },
+          ],
+          undefined, undefined, "stealth", "infiltrator",
+        ),
+        ch(
+          "sbc-talk",
+          "Approach openly and try to trade",
+          55,
+          [L("They're wary but willing. You leave with a deal."),
+            { type: "resource", key: "rations", delta: 8 },
+            { type: "resource", key: "caps", delta: -30 }],
+          [L("They mistake the approach for aggression. Gunfire starts."),
+            { type: "damage", target: "random_living", amount: 25 },
+            { type: "injure", target: "random_living" },
+            { type: "resource", key: "fuel", delta: -5 }],
+          undefined, undefined, "negotiate",
+        ),
+        ch(
+          "sbc-avoid",
+          "Steer well clear and continue",
+          undefined,
+          [L("Cautious. Nothing gained, nothing risked.")],
+          [],
+        ),
+      ],
+    }),
+
+    // ── Injured scout — slot auto-filled, follow-up effects target same person ──
+    event({
+      id: "sp-wounded-scout",
+      title: "Bad fall",
+      locations: ROT,
+      weight: 0.4,
+      memberSlots: [
+        slot("scout", "Who was scouting?", "random_living"),
+      ],
+      body: "{slot:scout} was ranging ahead of the convoy and didn't come back on schedule. Two hours later they limp in — something went wrong out there.",
+      choices: [
+        ch(
+          "wsca",
+          "Treat their wounds now.",
+          65,
+          [
+            L("{slot:scout} is patched up and back on their feet."),
+            { type: "heal", target: { slot: "scout" }, amount: 20 },
+            { type: "resource", key: "meds", delta: -2 },
+          ],
+          [
+            L("The wound is worse than it looked."),
+            { type: "injure", target: { slot: "scout" } },
+            { type: "resource", key: "meds", delta: -3 },
+          ],
+          undefined, undefined, "medical",
+        ),
+        ch(
+          "wscb",
+          "Stabilise and keep moving — treat later.",
+          undefined,
+          [
+            L("{slot:scout} grits it out. They'll need proper rest later."),
+            { type: "damage", target: { slot: "scout" }, amount: 12 },
+          ],
+          [],
+        ),
+      ],
+    }),
   ];
 }
 
 // ── Location legends ──────────────────────────────────────────────────────────
-// High-stakes, location-locked events. More flavour, higher consequences.
 
 function locationLegends(): GameEvent[] {
   return [
@@ -1034,15 +1021,14 @@ function locationLegends(): GameEvent[] {
       requiresLocation: "abandoned_city",
       locations: ["abandoned_city"],
       weight: 0.42,
-      body: "A tilted mall sign reads CLOSED FOREVER. Behind buckled security shutters: racks of pre-war longarms under vacuum glass—and active motion sensors.",
+      body: "A tilted mall sign: CLOSED FOREVER. Behind buckled shutters: pre-war longarms under vacuum glass — and active motion sensors.",
       choices: [
         ch(
           "lg1a",
           "Breach fast, grab crates, leave.",
-          "stalkerHunter",
-          30,
+          35,
           [
-            L("{specialist} times the sweep blind spots. You leave heavier than you arrived."),
+            L("You time the sweep blind spots and leave heavier than you arrived."),
             { type: "resource", key: "parts", delta: 4 },
             { type: "resource", key: "caps", delta: 120 },
             { type: "portChaos", delta: 10 },
@@ -1056,11 +1042,10 @@ function locationLegends(): GameEvent[] {
         ),
         ch(
           "lg1b",
-          "Bypass electronics quietly.",
-          "engineer",
-          35,
+          "Bypass the electronics.",
+          40,
           [
-            L("{specialist} spoofs the panel with jury-rigged caps and shame."),
+            L("You spoof the panel. Meds and parts inside."),
             { type: "resource", key: "meds", delta: 3 },
             { type: "resource", key: "parts", delta: -2 },
           ],
@@ -1073,11 +1058,10 @@ function locationLegends(): GameEvent[] {
         ch(
           "lg1c",
           "Walk away from the glitter.",
-          "calm",
-          60,
+          65,
           [L("You keep blood inside the convoy. For now.")],
           [
-            L("Someone sneaks back alone—and doesn't return."),
+            L("Someone sneaks back alone — and doesn't return."),
             { type: "kill", target: "random_living" },
             { type: "morale", target: "all_living", delta: -18 },
           ],
@@ -1095,10 +1079,9 @@ function locationLegends(): GameEvent[] {
         ch(
           "lg2a",
           "Vent and harvest stabilizer barrels.",
-          "mechanic",
-          30,
+          35,
           [
-            L("{best_mechanic} threads the sequence. You roll out with tradeable chems."),
+            L("You thread the sequence. Tradeable chems loaded."),
             { type: "resource", key: "meds", delta: 8 },
             { type: "resource", key: "fuel", delta: 10 },
           ],
@@ -1111,9 +1094,8 @@ function locationLegends(): GameEvent[] {
         ),
         ch(
           "lg2b",
-          "Burn it closed with fuel you can spare.",
-          "engineer",
-          45,
+          "Burn it closed with spare fuel.",
+          50,
           [
             L("Controlled burn. Ugly, loud, alive."),
             { type: "resource", key: "fuel", delta: -7 },
@@ -1124,48 +1106,6 @@ function locationLegends(): GameEvent[] {
             { type: "injure", target: "random_living" },
             { type: "damage", target: "all_living", amount: 16 },
             { type: "resource", key: "rations", delta: -8 },
-          ],
-        ),
-      ],
-    },
-    {
-      id: "lg-dune-ark",
-      title: "Buried transit ark",
-      requiresLocation: "open_waste",
-      locations: ["open_waste"],
-      weight: 0.38,
-      body: "A sand spine cracks open to show a buried metro mouth—dark, echoing, full of salvage legends and collapse dice.",
-      choices: [
-        ch(
-          "lg3a",
-          "Send a rope team.",
-          "navigator",
-          40,
-          [
-            L("Maps in dust. You pull water stills and wire."),
-            { type: "resource", key: "water", delta: 14 },
-            { type: "resource", key: "parts", delta: 2 },
-          ],
-          [
-            L("The ceiling calendars its revenge."),
-            { type: "injure", target: "random_living" },
-            { type: "damage", target: "random_living", amount: 20 },
-            { type: "time", days: 5 },
-          ],
-        ),
-        ch(
-          "lg3b",
-          "Collapse the entrance behind you as you leave.",
-          "engineer",
-          50,
-          [
-            L("No followers. No second chances."),
-            { type: "morale", target: "all_living", delta: 6 },
-          ],
-          [
-            L("Charges were wet. Something follows you."),
-            { type: "damage", target: "weakest", amount: 20 },
-            { type: "portChaos", delta: 6 },
           ],
         ),
       ],
@@ -1182,8 +1122,7 @@ function locationLegends(): GameEvent[] {
         ch(
           "lg4a",
           "Outbid with caps and parts.",
-          "negotiator",
-          35,
+          40,
           [
             L("You buy a window measured in minutes."),
             { type: "resource", key: "caps", delta: -80 },
@@ -1200,8 +1139,7 @@ function locationLegends(): GameEvent[] {
         ch(
           "lg4b",
           "Rumor a richer convoy coming behind you.",
-          "negotiator",
-          20,
+          25,
           [
             L("Greed is predictable. The line surges the wrong direction."),
             { type: "portChaos", delta: 12 },
@@ -1221,15 +1159,14 @@ function locationLegends(): GameEvent[] {
       requiresLocation: "industrial_strip",
       locations: ["industrial_strip"],
       weight: 0.38,
-      body: "A row of dead industrial crawlers. {best_mechanic} practically vibrates with interest. Stripping them would take hours and risk whoever crawls inside.",
+      body: "A row of dead industrial crawlers. Stripping them would take hours and risk whoever crawls inside.",
       choices: [
         ch(
           "lg5a",
           "Strip salvageable parts.",
-          "mechanic",
-          45,
+          50,
           [
-            L("{best_mechanic} comes out greased and grinning."),
+            L("{randomLiving} comes out greased and grinning."),
             { type: "resource", key: "parts", delta: 8 },
             { type: "transport", delta: 6 },
           ],
@@ -1242,10 +1179,9 @@ function locationLegends(): GameEvent[] {
         ch(
           "lg5b",
           "Siphon fuel from the dead tanks.",
-          "scavenger",
-          50,
+          55,
           [
-            L("{specialist} drains the last drops from three crawlers."),
+            L("You drain the last drops from three crawlers."),
             { type: "resource", key: "fuel", delta: 9 },
           ],
           [
@@ -1257,36 +1193,34 @@ function locationLegends(): GameEvent[] {
       ],
     },
     {
-      id: "lg-rad-spring",
-      title: "Glowing aquifer",
+      id: "lg-buried-depot",
+      title: "Buried supply depot",
       requiresLocation: "open_waste",
       locations: ["open_waste"],
-      weight: 0.35,
-      body: "Something seeps up from deep aquifer fractures—clear, cold, and softly luminescent. {best_medic} warns against it. {randomLiving} hesitates.",
+      weight: 0.38,
+      body: "A sand spine cracks open to reveal a buried logistics bay — dark, echoing, full of salvage legends and collapse dice.",
       choices: [
         ch(
-          "lg6a",
-          "Filter and boil; still collect it.",
-          "medic",
-          40,
+          "lg3a",
+          "Send a rope team down.",
+          45,
           [
-            L("{best_medic} runs what passes for decontam. Mostly safe."),
-            { type: "resource", key: "water", delta: 16 },
-            { type: "rad", delta: 10 },
+            L("You pull rations, parts, and emergency gear from the vault."),
+            { type: "resource", key: "rations", delta: 12 },
+            { type: "resource", key: "parts", delta: 4 },
           ],
           [
-            L("The rads passed the filter stage. Everybody burns a little."),
-            { type: "resource", key: "water", delta: 10 },
-            { type: "rad", delta: 22 },
-            { type: "sicken", target: "weakest", sickness: "Rad fever", days: 9 },
+            L("The ceiling exacts its revenge."),
+            { type: "injure", target: "random_living" },
+            { type: "damage", target: "random_living", amount: 20 },
+            { type: "time", days: 5 },
           ],
         ),
         ch(
-          "lg6b",
-          "Leave it alone.",
+          "lg3b",
+          "Seal the entrance and move on.",
           undefined,
-          0,
-          [L("Wisdom is free; clean water is not.")],
+          [L("No followers. No second chances."), { type: "morale", target: "all_living", delta: 4 }],
           [],
         ),
       ],
@@ -1307,7 +1241,6 @@ export const ALL_EVENTS: GameEvent[] = [
   ...CAPS_EVENTS,
 ];
 
-/** Road/travel random encounters (excludes scavenge-day pool). */
 export const TRAVEL_EVENTS: GameEvent[] = ALL_EVENTS.filter(
   (e) => (e.eventPool ?? "travel") === "travel",
 );

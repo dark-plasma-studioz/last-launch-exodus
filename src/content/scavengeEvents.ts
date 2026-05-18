@@ -1,6 +1,4 @@
-/**
- * Events that only fire on Scavenge days (not travel / rest / repair / scout).
- */
+/** Events that only fire on Search-for-Food days (scavenge pool). */
 import type { ChoiceDef, Effect, GameEvent, LocationId } from "../types";
 
 const L = (t: string): Effect => ({ type: "appendLog", text: t });
@@ -15,19 +13,11 @@ const ROT: LocationId[] = [
 function ch(
   id: string,
   text: string,
-  trait: ChoiceDef["trait"],
-  basePct: number,
+  basePct: number | undefined,
   ok: Effect[],
   bad: Effect[],
 ): ChoiceDef {
-  return {
-    id,
-    text,
-    trait,
-    basePct,
-    successEffects: ok,
-    failureEffects: bad,
-  };
+  return { id, text, basePct, successEffects: ok, failureEffects: bad };
 }
 
 function scavengeEvent(ev: Omit<GameEvent, "eventPool">): GameEvent {
@@ -41,9 +31,8 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     title: "Sealed pantry",
     body: "A collapsed diner still has a walk-in pantry. The door groans but holds vacuum.",
     ambientEffects: [
-      L("Canned goods and bottled water."),
-      { type: "resource", key: "rations", delta: 8 },
-      { type: "resource", key: "water", delta: 6 },
+      L("Canned goods loaded."),
+      { type: "resource", key: "rations", delta: 10 },
     ],
     locations: ["abandoned_city", "dead_highway"],
     weight: 0.7,
@@ -52,7 +41,7 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     id: "scv-fuel-truck",
     kind: "ambient",
     title: "Dead tanker",
-    body: "{best_mechanic} siphons what hasn't gelled from a rusted tanker hull.",
+    body: "{randomLiving} siphons what hasn't gelled from a rusted tanker hull.",
     ambientEffects: [
       L("Fuel drained into jerrycans."),
       { type: "resource", key: "fuel", delta: 7 },
@@ -65,7 +54,7 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     id: "scv-parts-yard",
     kind: "ambient",
     title: "Scrap yard windfall",
-    body: "A fenced yard of pre-war machinery—most is slag, but {specialist} spots usable assemblies.",
+    body: "A fenced yard of pre-war machinery. {randomLiving} spots usable assemblies under the rust.",
     ambientEffects: [
       L("Parts stripped from dead engines."),
       { type: "resource", key: "parts", delta: 5 },
@@ -81,12 +70,11 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
       ch(
         "scve1a",
         "Dig deeper anyway.",
-        "scavenger",
         45,
         [
-          L("{specialist} finds a hidden cellar."),
-          { type: "resource", key: "rations", delta: 4 },
-          { type: "resource", key: "water", delta: 3 },
+          L("{randomLiving} finds a hidden cellar with a few supplies."),
+          { type: "resource", key: "rations", delta: 5 },
+          { type: "resource", key: "parts", delta: 2 },
         ],
         [
           L("Collapse. Dust and disappointment."),
@@ -98,7 +86,6 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
         "scve1b",
         "Cut losses and leave.",
         undefined,
-        0,
         [L("You save daylight for the road.")],
         [{ type: "morale", target: "all_living", delta: -4 }],
       ),
@@ -112,9 +99,8 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     choices: [
       ch(
         "scvt1a",
-        "Raid fast with masks.",
-        "scavenger",
-        40,
+        "Raid fast with improvised masks.",
+        45,
         [
           L("Fuel stabilizer and med-grade solvent."),
           { type: "resource", key: "fuel", delta: 5 },
@@ -130,7 +116,6 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
         "scvt1b",
         "Skip it.",
         undefined,
-        0,
         [L("Not worth the cough.")],
         [],
       ),
@@ -146,15 +131,14 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
       ch(
         "scvp1a",
         "Pry it open.",
-        "stalkerHunter",
-        50,
+        55,
         [
-          L("Personal kit for whoever claims it."),
-          { type: "grantPersonal", itemId: "pi_field_knife", target: "random_living" },
+          L("Personal kit inside — someone claims it."),
+          { type: "grantPersonal", itemId: "pi_armour_vest", target: "random_living" },
           { type: "resource", key: "caps", delta: 25 },
         ],
         [
-          L("Booby trap. Spring blade."),
+          L("Booby trap. Spring blade catches {randomLiving}."),
           { type: "injure", target: "random_living" },
         ],
       ),
@@ -162,7 +146,6 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
         "scvp1b",
         "Leave the row alone.",
         undefined,
-        0,
         [L("You move on.")],
         [],
       ),
@@ -173,17 +156,16 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
   scavengeEvent({
     id: "scv-nurse-cache",
     title: "Field nurse cache",
-    body: "A red cross crate buried under rubble. {best_medic} recognizes the packing.",
+    body: "A red cross crate buried under rubble. {randomLiving} recognizes the packing.",
     choices: [
       ch(
         "scvn1a",
         "Recover everything.",
-        "medic",
-        55,
+        60,
         [
-          L("Meds and a personal kit."),
+          L("Meds and a personal medic kit."),
           { type: "resource", key: "meds", delta: 4 },
-          { type: "grantPersonal", itemId: "pi_pharmacist_satchel", target: "weakest" },
+          { type: "grantPersonal", itemId: "pi_medic_bag", target: "weakest" },
         ],
         [
           L("Glass cuts. Supplies still worth it."),
@@ -195,19 +177,6 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     weight: 0.38,
   }),
   scavengeEvent({
-    id: "scv-water-tower",
-    kind: "ambient",
-    title: "Intact water tower",
-    body: "A municipal tower still holds a bladder of filtered runoff—murky but drinkable after boil.",
-    ambientEffects: [
-      L("Water hauled to the convoy."),
-      { type: "resource", key: "water", delta: 12 },
-      { type: "time", days: 1 },
-    ],
-    locations: ROT,
-    weight: 0.55,
-  }),
-  scavengeEvent({
     id: "scv-grocery-back",
     title: "Grocery loading dock",
     body: "Rotting pallets, but the cold room door is still sealed. {randomLiving} hears dripping inside.",
@@ -215,12 +184,11 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
       ch(
         "scvg1a",
         "Breach the cold room.",
-        "ironGut",
-        48,
+        50,
         [
           L("Frozen stock still edible."),
           { type: "resource", key: "rations", delta: 10 },
-          { type: "resource", key: "water", delta: 4 },
+          { type: "resource", key: "meds", delta: 1 },
         ],
         [
           L("Spoilage wins. Someone retches."),
@@ -231,8 +199,7 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
       ch(
         "scvg1b",
         "Take only dry goods from the dock.",
-        "scavenger",
-        60,
+        65,
         [
           L("Safe, modest haul."),
           { type: "resource", key: "rations", delta: 5 },
@@ -250,9 +217,9 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     id: "scv-charm-find",
     kind: "ambient",
     title: "Someone's stash",
-    body: "{randomLiving} finds a satchel under a bench—caps, a charm, and nothing identifying.",
+    body: "{randomLiving} finds a satchel under a bench — caps, a charm, and nothing identifying.",
     ambientEffects: [
-      L("Caps and a charm claimed."),
+      L("Caps and a lucky charm claimed."),
       { type: "resource", key: "caps", delta: 45 },
       { type: "grantPersonal", itemId: "pi_lucky_charm", target: "random_living" },
     ],
@@ -266,13 +233,12 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
       ch(
         "scvg2a",
         "Strip tools and parts.",
-        "mechanic",
         55,
         [
-          L("{best_mechanic} loads the wagon."),
+          L("{randomLiving} loads the wagon with useful gear."),
           { type: "resource", key: "parts", delta: 6 },
           { type: "resource", key: "fuel", delta: 3 },
-          { type: "grantPersonal", itemId: "pi_tool_belt", target: "specialist" },
+          { type: "grantPersonal", itemId: "pi_stim_injector", target: "random_living" },
         ],
         [
           L("Shelf collapses."),
@@ -291,14 +257,13 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     choices: [
       ch(
         "scva1a",
-        "Share the block—offer caps.",
-        "negotiator",
+        "Share the block — offer some caps.",
         50,
         [
           L("They take caps and point you to a good room."),
           { type: "resource", key: "caps", delta: -30 },
-          { type: "resource", key: "rations", delta: 6 },
-          { type: "resource", key: "water", delta: 5 },
+          { type: "resource", key: "rations", delta: 7 },
+          { type: "resource", key: "parts", delta: 2 },
         ],
         [
           L("They take caps and still get ugly."),
@@ -309,7 +274,6 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
       ch(
         "scva1b",
         "Grab what's nearest and run.",
-        "scavenger",
         45,
         [
           L("Quick grab: mixed supplies."),
@@ -326,13 +290,13 @@ export const SCAVENGE_EVENTS: GameEvent[] = [
     weight: 0.48,
   }),
   scavengeEvent({
-    id: "scv-goggles-case",
+    id: "scv-hunting-kit",
     kind: "ambient",
-    title: "Optics case",
-    body: "A hard case in a bus wreck—welding goggles, still intact.",
+    title: "Hunter's pack",
+    body: "A hard case in a bus wreck — hunting gear, still serviceable.",
     ambientEffects: [
-      L("Goggles go to whoever needs them."),
-      { type: "grantPersonal", itemId: "pi_goggles", target: "random_living" },
+      L("Hunting kit goes to whoever can use it best."),
+      { type: "grantPersonal", itemId: "pi_hunting_kit", target: "random_living" },
     ],
     weight: 0.32,
   }),

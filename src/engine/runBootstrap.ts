@@ -11,19 +11,17 @@ import {
   partyScaling,
   START_KM,
   daysFromYears,
+  makeFriend,
+  makeParty,
 } from "../config/difficulty";
 import { getItem } from "../config/items";
+import { applyTraitBonuses } from "../config/traits";
 import { locationFromKm } from "./locations";
 
 export interface DepotCart {
-  /** itemId -> count */
   lines: Record<string, number>;
 }
 
-/**
- * Personal item assignments: maps itemId → friend id.
- * Each personal item is assigned to at most one member.
- */
 export type PersonalAssignments = Record<string, string>;
 
 export function applyDepotCheckout(
@@ -56,19 +54,13 @@ export function applyDepotCheckout(
     if (def.grants) {
       const g = def.grants;
       if (g.rations) res.rations += g.rations * count;
-      if (g.water)   res.water   += g.water   * count;
       if (g.meds)    res.meds    += g.meds    * count;
       if (g.parts)   res.parts   += g.parts   * count;
       if (g.fuel)    res.fuel    += g.fuel    * count;
     }
   }
 
-  return {
-    inventory,
-    resources: res,
-    capsRemaining: caps,
-    capsSpent: cap0 - caps,
-  };
+  return { inventory, resources: res, capsRemaining: caps, capsSpent: cap0 - caps };
 }
 
 export function createRunState(opts: {
@@ -78,9 +70,7 @@ export function createRunState(opts: {
   resources: RunResources;
   rngSeed: number;
   capsSpentAtDepot: number;
-  /** Caps not spent at depot (usable at biome shops). */
   capsRemaining?: number;
-  /** Which personal items were assigned to which friend ids at the depot. */
   personalAssignments?: PersonalAssignments;
 }): RunState {
   const diff = DIFFICULTY[opts.difficulty];
@@ -91,13 +81,13 @@ export function createRunState(opts: {
     Math.round(64 - (ps.rationMult - 1) * 18 - (ps.encounterMult - 1) * 10),
   );
 
-  const friends: Friend[] = structuredClone(opts.friends).map((f) => ({
-    ...f,
-    sick: undefined,
-    memberItems: [] as string[],
-  }));
+  const friends: Friend[] = structuredClone(opts.friends).map((f) => {
+    const friend = { ...f, sick: undefined, memberItems: [] as string[] };
+    // Apply trait stat bonuses (maxHealth, morale, etc.)
+    applyTraitBonuses(friend, friend.traits ?? []);
+    return friend;
+  });
 
-  // Apply personal item assignments and their member effects
   const assignments = opts.personalAssignments ?? {};
   for (const [itemId, friendId] of Object.entries(assignments)) {
     const def = getItem(itemId);
@@ -109,15 +99,13 @@ export function createRunState(opts: {
       const me = def.memberEffect;
       if (me.maxHealthBonus) {
         friend.maxHealth += me.maxHealthBonus;
-        friend.health    += me.maxHealthBonus;
+        friend.health = Math.min(friend.maxHealth, friend.health + me.maxHealthBonus);
       }
-      if (me.moraleBonus) {
+      if (me.moraleBonus)
         friend.morale = Math.min(100, friend.morale + me.moraleBonus);
-      }
     }
   }
 
-  // Remove personal items from party inventory (they live on members now)
   const inventory = structuredClone(opts.inventory).filter((e) => {
     const def = getItem(e.itemId);
     return def?.kind !== "personal";
@@ -141,7 +129,7 @@ export function createRunState(opts: {
     log: [
       {
         day: 0,
-        text: "The ash highway remembers nothing useful. Only distance, rads, and rumor of a last ship.",
+        text: "The ash highway remembers nothing useful. Only distance, rads, and rumour of a last ship.",
       },
     ],
     currentEvent: null,
@@ -152,6 +140,11 @@ export function createRunState(opts: {
     rngSeed: opts.rngSeed >>> 0,
     outcome: "ongoing",
     scoreCapsSpent: opts.capsSpentAtDepot,
-    autoTravel: false,
+    paused: false,
+    pace: "steady",
+    rationsPerPerson: 2,
   };
 }
+
+// Re-export so other modules can use these without importing difficulty directly
+export { makeFriend, makeParty };

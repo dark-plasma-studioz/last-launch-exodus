@@ -1,13 +1,8 @@
 import { useEffect, useState, type ReactElement } from "react";
-import type { Friend, TraitId } from "../types";
-import { TRAIT_DESCRIPTIONS } from "../types";
+import type { Friend } from "../types";
 import { getItem } from "../config/items";
 import { HoverTip } from "./HoverTip";
 import type { FloatDelta } from "./runSnapshot";
-
-function traitTip(trait: TraitId): string {
-  return TRAIT_DESCRIPTIONS[trait] ?? trait;
-}
 
 function PartyStatInline(props: {
   label: string;
@@ -48,20 +43,14 @@ function SickBadge(props: { sick: NonNullable<Friend["sick"]> }): ReactElement {
   const tip = `${sick.name}: ${sick.daysLeft} day${sick.daysLeft === 1 ? "" : "s"} left. Cure with meds while resting.`;
   return (
     <HoverTip tip={tip}>
-      <span
-        className="sick-badge"
-        style={{ color: urgency, borderColor: urgency }}
-      >
+      <span className="sick-badge" style={{ color: urgency, borderColor: urgency }}>
         {sick.name} ({sick.daysLeft}d)
       </span>
     </HoverTip>
   );
 }
 
-function PartyMemberCard(props: {
-  friend: Friend;
-  floats: FloatDelta[];
-}): ReactElement {
+function PartyMemberCard(props: { friend: Friend; floats: FloatDelta[] }): ReactElement {
   const { friend: f, floats } = props;
   const hpFloats = floats.filter((d) => d.statKey === `hp:${f.id}`);
   const moraleFloats = floats.filter((d) => d.statKey === `morale:${f.id}`);
@@ -84,29 +73,10 @@ function PartyMemberCard(props: {
 
       {f.status !== "dead" ? (
         <div className="party-stat-line">
-          <PartyStatInline
-            label="HP"
-            value={`${f.health}/${f.maxHealth}`}
-            floats={hpFloats}
-          />
-          <PartyStatInline
-            label="Morale"
-            value={String(f.morale)}
-            floats={moraleFloats}
-          />
+          <PartyStatInline label="HP" value={`${f.health}/${f.maxHealth}`} floats={hpFloats} />
+          <PartyStatInline label="Morale" value={String(f.morale)} floats={moraleFloats} />
         </div>
       ) : null}
-
-      <div className="party-card-section">
-        <span className="party-section-label">Traits</span>
-        <div className="party-chip-row">
-          {f.traits.map((t) => (
-            <HoverTip key={t} tip={traitTip(t)} className="hover-tip-anchor trait-chip on">
-              {t}
-            </HoverTip>
-          ))}
-        </div>
-      </div>
 
       <div className="party-card-section">
         <span className="party-section-label">Inventory</span>

@@ -1,19 +1,96 @@
-import type { Effect, EventPool, Friend, GameEvent, RunState, TraitId } from "../types";
-import { NEGATIVE_TRAITS } from "../types";
+import type { CheckType, Effect, EffectTarget, EventPool, Friend, GameEvent, Pace, RunState } from "../types";
 import type { LocationId } from "./locations";
 import { LOCATION_LABEL, locationFromKm } from "./locations";
 import { getItem } from "../config/items";
 import { DIFFICULTY, partyScaling } from "../config/difficulty";
+import { memberCheckBonus, traitBonusFor, applyTraitBonuses, getSpecialty } from "../config/traits";
 import { mulberry32, pickIndex } from "./rng";
-import { SCAVENGE_EVENTS, TRAVEL_EVENTS } from "../content/events";
+import { TRAVEL_EVENTS } from "../content/events";
 import { shopForLocation } from "../config/shops";
 
-export type DailyAction = "travel" | "scavenge" | "rest" | "repair" | "scout";
+export type DailyAction = "travel" | "search_food" | "rest" | "trade";
 
-const NEG_SET = new Set<string>(NEGATIVE_TRAITS);
+// ── Pace config ───────────────────────────────────────────────────────────────
+
+export const PACE_LABEL: Record<Pace, string> = {
+  leisurely: "Leisurely",
+  steady: "Steady",
+  grueling: "Grueling",
+};
+
+interface PaceConfig {
+  /** Base km gained per travel day (before rng variance). */
+  baseKm: number;
+  /** Variance added to base km (0..var). */
+  kmVariance: number;
+  /** Fuel burned per travel day (before item discounts). */
+  fuelPerDay: number;
+  /** Ration multiplier on top of rationsPerPerson setting. */
+  rationMult: number;
+  /** Per-day injury chance (0.0–1.0). */
+  injuryChance: number;
+}
+
+const PACE_CONFIG: Record<Pace, PaceConfig> = {
+  leisurely: { baseKm: 6,  kmVariance: 2, fuelPerDay: 0.2, rationMult: 0.9, injuryChance: 0.03 },
+  steady:    { baseKm: 9,  kmVariance: 2, fuelPerDay: 0.4, rationMult: 1.0, injuryChance: 0.06 },
+  grueling:  { baseKm: 12, kmVariance: 3, fuelPerDay: 0.6, rationMult: 1.1, injuryChance: 0.13 },
+};
+
+/** Typical km range for a travel day at this pace (before transport/items). */
+export function paceKmRange(pace: Pace): { min: number; max: number } {
+  const c = PACE_CONFIG[pace];
+  return { min: c.baseKm, max: c.baseKm + c.kmVariance };
+}
+
+/** One-line tooltip for a single pace option. */
+export function paceTravelTip(pace: Pace): string {
+  const { min, max } = paceKmRange(pace);
+  const fuel = PACE_CONFIG[pace].fuelPerDay;
+  return `${PACE_LABEL[pace]}: ${min}–${max} km/day, ${fuel} fuel/day.`;
+}
+
+/** Overview of all pace options (pause menu / reference). */
+export const PACE_ALL_TIP =
+  "Travel pace sets distance and fuel per day. Leisurely 6–8 km (0.2 fuel). Steady 9–11 km (0.4 fuel). Grueling 12–15 km (0.6 fuel). Faster paces mean more road injuries.";
+
+/** Per travel day: fraction of rationsPerPerson × party actually consumed. */
+const RATION_COST_SCALE = 0.22;
+
+function roundFuel(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+/** Speed multiplier when out of fuel (0.1 = 90% slower). */
+const PUSH_SPEED_MULT = 0.1;
+/** Extra injury chance per person when pushing the rig. */
+const PUSH_INJURY_BONUS = 0.24;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function livingFriends(s: RunState): Friend[] {
   return s.friends.filter((f) => f.status !== "dead");
+}
+
+/** Pay ration cost or, if short, starve the party (−10 HP each). */
+function consumeRationsOrStarve(out: RunState, cost: number, context: string): void {
+  const rounded = Math.max(0, Math.round(cost));
+  if (rounded === 0) return;
+
+  if (out.resources.rations >= rounded) {
+    out.resources.rations -= rounded;
+    return;
+  }
+
+  out.resources.rations = 0;
+  for (const f of livingFriends(out)) {
+    f.health = Math.max(0, f.health - 10);
+    if (f.health <= 0) {
+      f.status = "dead";
+      f.deathCause = "starvation";
+      f.deathDay = out.day;
+    }
+  }
+  pushLog(out, `Out of rations (${context}). Each survivor loses 10 HP.`);
 }
 
 function cloneState(s: RunState): RunState {
@@ -51,103 +128,82 @@ function removeInventory(s: RunState, itemId: string, count: number): void {
 
 function pickTarget(
   s: RunState,
-  target: "random_living" | "weakest" | "all_living",
+  target: EffectTarget,
   rng: () => number,
 ): Friend[] {
   const L = livingFriends(s);
   if (!L.length) return [];
-  if (target === "all_living") return L;
-  if (target === "weakest") {
-    return [
-      [...L].sort((a, b) => a.health / a.maxHealth - b.health / b.maxHealth)[0],
-    ];
+
+  // Named slot target
+  if (typeof target === "object" && "slot" in target) {
+    const friendId = s.currentEvent?.filledSlots?.[target.slot];
+    if (!friendId) return [];
+    const f = s.friends.find((m) => m.id === friendId && m.status !== "dead");
+    return f ? [f] : [];
   }
+
+  if (target === "all_living") return L;
+  if (target === "weakest")
+    return [[...L].sort((a, b) => a.health / a.maxHealth - b.health / b.maxHealth)[0]];
   return [L[Math.floor(rng() * L.length)]];
 }
 
-// ── Chance system ────────────────────────────────────────────────────────────
-//
-// Content authors set basePct (0–100) per choice.  The engine modifies it:
-//   +12% per living party member who has the required trait
-//   +2%  per living member beyond the first (max +8%)
-//   -3%  per negative trait across all living members (max -15%)
-//   Item passive bonuses (geiger, dog_tags, etc.)
-//   +checkBonus from personal items on the specialist member
-//
-// Final chance is clamped 0–100.
+/** Resolve a named slot to a friendId, or null if not filled. */
+function resolveSlot(s: RunState, slotKey: string): Friend | null {
+  const id = s.currentEvent?.filledSlots?.[slotKey];
+  if (!id) return null;
+  return s.friends.find((f) => f.id === id && f.status !== "dead") ?? null;
+}
 
-/**
- * Compute the final success percentage for a trait check.
- * Returns the chance and the name of the "specialist" (first trait holder).
- */
-export function computeFinalChance(
-  s: RunState,
-  trait: TraitId | undefined,
-  basePct: number,
-): { chance: number; specialist: string } {
-  if (!trait) return { chance: 100, specialist: "" };
+/** Auto-fill all non-player-choice slots on an event. */
+export function autoFillEventSlots(event: GameEvent, s: RunState, rng: () => number): GameEvent {
+  const slots = event.memberSlots;
+  if (!slots?.length) return event;
 
+  const filled: Record<string, string> = { ...(event.filledSlots ?? {}) };
   const L = livingFriends(s);
-  let chance = basePct;
-  let specialist = "";
+  if (!L.length) return event;
 
-  for (const f of L) {
-    if (f.traits.includes(trait)) {
-      chance += 12;
-      if (!specialist) specialist = f.name;
-      // Personal item bonus on this specialist
-      for (const itemId of f.memberItems) {
-        const def = getItem(itemId);
-        if (def?.memberEffect?.checkBonus) chance += def.memberEffect.checkBonus;
-      }
+  for (const slot of slots) {
+    if (filled[slot.key]) continue; // already filled (player choice)
+    if (slot.how === "player_choice") continue; // will be filled interactively
+    if (slot.how === "weakest") {
+      const f = [...L].sort((a, b) => a.health / a.maxHealth - b.health / b.maxHealth)[0];
+      filled[slot.key] = f.id;
+    } else {
+      // random_living
+      filled[slot.key] = L[Math.floor(rng() * L.length)].id;
     }
   }
 
-  // Party size bonus
-  chance += Math.min((L.length - 1) * 2, 8);
-
-  // Negative trait penalty
-  let negCount = 0;
-  for (const f of L) {
-    for (const t of f.traits) {
-      if (NEG_SET.has(t)) negCount++;
-    }
-  }
-  chance -= Math.min(negCount * 3, 15);
-
-  // Inventory item bonuses
-  if (hasItem(s, "u_geiger") && (trait === "radSense" || s.rads > 45)) chance += 8;
-  if (hasItem(s, "u_saint_patch") && trait === "mechanic") {
-    if (L.some((f) => f.morale > 40)) chance += 8;
-  }
-  if (hasItem(s, "u_dog_tags") && trait === "negotiator") chance += 6;
-  if (hasItem(s, "u_forge_kit") && s.flags.forge_kit_used !== true) {
-    if (trait === "negotiator") chance += 6;
-  }
-
-  return { chance: Math.max(0, Math.min(100, Math.round(chance))), specialist };
+  return { ...event, filledSlots: filled };
 }
 
-/** Roll 0–99; succeed if draw < chance. Handles lucky coin. */
-function rollPercentCheck(
-  s: RunState,
-  chance: number,
-  rng: () => number,
-): { ok: boolean; draw: number; usedCoin: boolean } {
-  const draw = Math.floor(rng() * 100);
-  let ok = draw < chance;
-  let usedCoin = false;
+// ── Trait & specialty bonuses ─────────────────────────────────────────────────
 
-  if (!ok && hasItem(s, "u_lucky_coin") && s.flags.lucky_coin_used !== true) {
-    const draw2 = Math.floor(rng() * 100);
-    ok = draw2 < chance;
-    if (ok) {
-      s.flags.lucky_coin_used = true;
-      usedCoin = true;
+/** Apply all trait stat bonuses to friends at run start. Called in runBootstrap. */
+export function applyAllTraitBonuses(friends: Friend[]): void {
+  for (const f of friends) {
+    applyTraitBonuses(f, f.traits ?? []);
+  }
+}
+
+/** Compute total scavenge/trade/injury resistance from a friend's traits + items. */
+export function memberPassiveBonus(f: Friend, field: "scavengeBonus" | "tradeBonus" | "injuryResistance"): number {
+  let total = 0;
+  // Item bonuses
+  for (const itemId of f.memberItems) {
+    const def = getItem(itemId);
+    if (def?.memberEffect) {
+      total += (def.memberEffect[field] ?? 0) as number;
     }
   }
-  return { ok, draw, usedCoin };
+  // Trait bonuses
+  total += traitBonusFor(f.traits ?? [], field);
+  return total;
 }
+
+// ── Personal items ────────────────────────────────────────────────────────────
 
 function applyPersonalItemBonuses(f: Friend, itemId: string): void {
   const def = getItem(itemId);
@@ -155,11 +211,9 @@ function applyPersonalItemBonuses(f: Friend, itemId: string): void {
   const me = def.memberEffect;
   if (me.maxHealthBonus) {
     f.maxHealth += me.maxHealthBonus;
-    f.health += me.maxHealthBonus;
+    f.health = Math.min(f.maxHealth, f.health + me.maxHealthBonus);
   }
-  if (me.moraleBonus) {
-    f.morale = Math.min(100, f.morale + me.moraleBonus);
-  }
+  if (me.moraleBonus) f.morale = Math.min(100, f.morale + me.moraleBonus);
 }
 
 function grantPersonalItem(
@@ -167,20 +221,14 @@ function grantPersonalItem(
   itemId: string,
   target: "random_living" | "weakest" | "specialist",
   rng: () => number,
-  specialistName: string,
 ): void {
   const def = getItem(itemId);
   if (!def || def.kind !== "personal") return;
 
-  let targets: Friend[];
-  if (target === "specialist" && specialistName) {
-    const f = livingFriends(s).find((x) => x.name === specialistName);
-    targets = f ? [f] : pickTarget(s, "random_living", rng);
-  } else if (target === "specialist") {
-    targets = pickTarget(s, "random_living", rng);
-  } else {
-    targets = pickTarget(s, target, rng);
-  }
+  const targets =
+    target === "specialist"
+      ? pickTarget(s, "random_living", rng)
+      : pickTarget(s, target, rng);
 
   for (const f of targets) {
     if (f.memberItems.includes(itemId)) {
@@ -193,15 +241,15 @@ function grantPersonalItem(
   }
 }
 
-// ── Sickness ─────────────────────────────────────────────────────────────────
+// ── Sickness ──────────────────────────────────────────────────────────────────
 
 function processSicknessDay(out: RunState): void {
   for (const f of livingFriends(out)) {
     if (!f.sick) continue;
     f.sick.daysLeft -= 1;
-    if (f.sick.daysLeft === 3) {
+    if (f.sick.daysLeft === 3)
       pushLog(out, `${f.name}'s ${f.sick.name} is worsening — 3 days left without medicine.`);
-    } else if (f.sick.daysLeft <= 0) {
+    else if (f.sick.daysLeft <= 0) {
       const cause = f.sick.name;
       f.sick = undefined;
       f.status = "dead";
@@ -209,24 +257,22 @@ function processSicknessDay(out: RunState): void {
       f.deathCause = cause;
       f.deathDay = out.day;
       pushLog(out, `${f.name} succumbed to ${cause}.`);
-      if (!out.runModal) {
+      if (!out.runModal)
         out.runModal = {
           kind: "notice",
           title: "Death from illness",
           body: `${f.name} didn't make it. The ${cause} finished them before medicine arrived.`,
         };
-      }
     }
   }
 }
 
-// ── applyEffects ─────────────────────────────────────────────────────────────
+// ── applyEffects ──────────────────────────────────────────────────────────────
 
 export function applyEffects(
   state: RunState,
   effects: Effect[],
   rng: () => number,
-  specialistName = "",
 ): RunState {
   const s = cloneState(state);
   for (const e of effects) {
@@ -276,25 +322,21 @@ export function applyEffects(
       case "heal": {
         for (const f of pickTarget(s, e.target, rng)) {
           f.health = Math.min(f.maxHealth, f.health + e.amount);
-          if (f.health > f.maxHealth * 0.55 && f.status === "injured")
-            f.status = "alive";
+          if (f.health > f.maxHealth * 0.55 && f.status === "injured") f.status = "alive";
         }
         break;
       }
-      case "morale": {
-        for (const f of livingFriends(s)) {
+      case "morale":
+        for (const f of livingFriends(s))
           f.morale = Math.max(0, Math.min(100, f.morale + e.delta));
-        }
         break;
-      }
-      case "injure": {
+      case "injure":
         for (const f of pickTarget(s, e.target, rng)) {
           f.status = "injured";
           f.health = Math.min(f.health, f.maxHealth * 0.5);
         }
         break;
-      }
-      case "kill": {
+      case "kill":
         for (const f of pickTarget(s, e.target, rng)) {
           f.status = "dead";
           f.health = 0;
@@ -302,37 +344,31 @@ export function applyEffects(
           f.deathDay = s.day;
         }
         break;
-      }
-      case "sicken": {
+      case "sicken":
         for (const f of pickTarget(s, e.target, rng)) {
           if (f.sick || f.status === "dead") break;
           let days = e.days;
-          // Personal item resistance
           for (const itemId of f.memberItems) {
             const def = getItem(itemId);
             if (def?.memberEffect?.sicknessResistDays) days += def.memberEffect.sicknessResistDays;
           }
           f.sick = { name: e.sickness, daysLeft: days, totalDays: days };
-          pushLog(s, `${f.name} has contracted ${e.sickness} (${days} days to treat).`);
-          // Pre-war antibiotics auto-cure
+          pushLog(s, `${f.name} contracted ${e.sickness} (${days} days to treat).`);
           if (hasItem(s, "u_antibiotics")) {
             f.sick = undefined;
             removeInventory(s, "u_antibiotics", 1);
-            pushLog(s, "Pre-war antibiotics course immediately treats the illness.");
+            pushLog(s, "Pre-war antibiotics immediately neutralise the illness.");
           }
         }
         break;
-      }
-      case "cure": {
+      case "cure":
         for (const f of pickTarget(s, e.target, rng)) {
           if (f.sick) {
-            const name = f.sick.name;
+            pushLog(s, `${f.name} recovered from ${f.sick.name}.`);
             f.sick = undefined;
-            pushLog(s, `${f.name} has recovered from ${name}.`);
           }
         }
         break;
-      }
       case "item":
         addInventory(s, e.itemId, e.count ?? 1);
         break;
@@ -343,8 +379,22 @@ export function applyEffects(
         s.embarkEventsLeft = e.value;
         break;
       case "grantPersonal":
-        grantPersonalItem(s, e.itemId, e.target, rng, specialistName);
+        grantPersonalItem(s, e.itemId, e.target, rng);
         break;
+      case "fillSlot": {
+        const L2 = livingFriends(s);
+        if (!L2.length) break;
+        const target2 = e.how === "weakest"
+          ? [...L2].sort((a, b) => a.health / a.maxHealth - b.health / b.maxHealth)[0]
+          : L2[Math.floor(rng() * L2.length)];
+        if (s.currentEvent) {
+          s.currentEvent = {
+            ...s.currentEvent,
+            filledSlots: { ...(s.currentEvent.filledSlots ?? {}), [e.slot]: target2.id },
+          };
+        }
+        break;
+      }
       default:
         break;
     }
@@ -354,49 +404,55 @@ export function applyEffects(
 
 // ── Template strings ──────────────────────────────────────────────────────────
 
-export function templateString(
-  s: RunState,
-  text: string,
-  specialist: string,
-  rng: () => number,
-): string {
-  const L = livingFriends(s);
-  const random = L.length ? L[Math.floor(rng() * L.length)].name : "nobody";
-  const best = (trait: string) => {
-    const fs = L.filter((f) => f.traits.includes(trait as never));
-    if (!fs.length) return random;
-    return fs.reduce((a, b) => (a.health >= b.health ? a : b)).name;
-  };
-  return text
-    .replaceAll("{randomLiving}", random)
-    .replaceAll("{specialist}", specialist || random)
-    .replaceAll("{best_medic}", best("medic"))
-    .replaceAll("{best_mechanic}", best("mechanic"))
-    .replaceAll("{best_navigator}", best("navigator"));
+/**
+ * Resolve template placeholders in event text.
+ *
+ * Supported tokens:
+ *   {randomLiving}      — random living member name (each call picks independently)
+ *   {slot:key}          — name of the member in named slot "key"
+ *   {specialty:key}     — specialty name of the member in named slot "key"
+ */
+export function templateString(s: RunState, text: string, rng: () => number): string {
+  let result = text;
+
+  // {randomLiving} — independent picks each time it appears
+  result = result.replace(/\{randomLiving\}/g, () => {
+    const living = livingFriends(s);
+    return living.length ? living[Math.floor(rng() * living.length)].name : "someone";
+  });
+
+  // {slot:key} → member name
+  result = result.replace(/\{slot:(\w+)\}/g, (_match, key: string) => {
+    const f = resolveSlot(s, key);
+    return f?.name ?? "someone";
+  });
+
+  // {specialty:key} → specialty name of the member in the slot
+  result = result.replace(/\{specialty:(\w+)\}/g, (_match, key: string) => {
+    const f = resolveSlot(s, key);
+    if (!f?.specialty) return "unknown";
+    return getSpecialty(f.specialty).name;
+  });
+
+  return result;
 }
 
-// ── Win / loss evaluation ────────────────────────────────────────────────────
+// ── Win / loss evaluation ─────────────────────────────────────────────────────
 
 export function evaluateLoss(s: RunState): string | null {
   if (s.departureDaysRemaining <= 0)
     return "The last ship's window closed before you arrived.";
   if (!livingFriends(s).length) return "Your entire party is gone.";
   if (s.transport <= 0 && s.kmRemaining > 80)
-    return "Your convoy seized—no viable transport across the dead highways.";
-  if (s.resources.rations <= 0 && s.resources.water <= 0)
-    return "Starvation and thirst finished what the bombs started.";
+    return "Your convoy seized — no viable transport across the dead highways.";
   return null;
 }
 
 export function evaluateWin(s: RunState): boolean {
-  return (
-    s.kmRemaining <= 0 &&
-    s.embarkEventsLeft <= 0 &&
-    livingFriends(s).length > 0
-  );
+  return s.kmRemaining <= 0 && s.embarkEventsLeft <= 0 && livingFriends(s).length > 0;
 }
 
-// ── Event eligibility ────────────────────────────────────────────────────────
+// ── Event eligibility ─────────────────────────────────────────────────────────
 
 function eventMatchesRun(ev: GameEvent, s: RunState): boolean {
   if (ev.requiresFlag && !s.flags[ev.requiresFlag]) return false;
@@ -405,7 +461,6 @@ function eventMatchesRun(ev: GameEvent, s: RunState): boolean {
 
   const embarkQueue = s.kmRemaining <= 0 && s.embarkEventsLeft > 0;
   const finished = s.kmRemaining <= 0 && s.embarkEventsLeft <= 0;
-
   if (finished) return false;
   if (embarkQueue) return ev.locations?.includes("embark") === true;
   if (s.kmRemaining <= 0) return false;
@@ -427,13 +482,26 @@ export function pickNextEvent(
   );
   if (!eligible.length) return null;
   const n = livingFriends(s).length;
-  const dw =
-    DIFFICULTY[s.difficulty].encounterWeight * partyScaling(n).encounterMult;
+  const dw = DIFFICULTY[s.difficulty].encounterWeight * partyScaling(n).encounterMult;
   const weights = eligible.map((e) => (e.weight ?? 1) * dw);
   return eligible[pickIndex(rng, weights)];
 }
 
-// ── Choice resolution ─────────────────────────────────────────────────────────
+// ── Choice resolution ──────────────────────────────────────────────────────────
+
+/**
+ * Fill a player-choice slot and store the chosen friend id into the event.
+ * Called from RunView when the player selects a member in the member picker.
+ */
+export function fillSlot(s: RunState, slotKey: string, friendId: string): RunState {
+  if (!s.currentEvent) return s;
+  const next = cloneState(s);
+  next.currentEvent = {
+    ...next.currentEvent!,
+    filledSlots: { ...(next.currentEvent!.filledSlots ?? {}), [slotKey]: friendId },
+  };
+  return next;
+}
 
 export function resolveChoice(
   s: RunState,
@@ -444,42 +512,62 @@ export function resolveChoice(
   const ch = (ev.choices ?? []).find((c) => c.id === choiceId);
   if (!ch) return s;
   let next = cloneState(s);
-  const { specialist: spec } = computeFinalChance(next, ch.trait, ch.basePct ?? 100);
-  const tpl = (t: string) => templateString(next, t, spec, rng);
 
   if (ch.requiredItem && !hasItem(next, ch.requiredItem)) {
     pushLog(next, "You lack the required gear for that choice.");
     return next;
   }
 
-  // Apply always-effects
   const always = (ch.alwaysEffects ?? []).map((e) =>
-    e.type === "appendLog" ? { ...e, text: tpl(e.text) } : e,
+    e.type === "appendLog" ? { ...e, text: templateString(next, e.text, rng) } : e,
   );
-  next = applyEffects(next, always, rng, spec);
+  next = applyEffects(next, always, rng);
 
+  // Flat percent roll with specialty + trait bonuses
   let ok = true;
-  if (ch.trait !== undefined && ch.basePct !== undefined) {
-    const { chance } = computeFinalChance(next, ch.trait, ch.basePct);
-    const { ok: rolled, draw, usedCoin } = rollPercentCheck(next, chance, rng);
-    ok = rolled;
-    pushLog(
-      next,
-      tpl(
-        `${ch.trait}: ${chance}% odds. Drew ${draw} — need under ${chance}${usedCoin ? " · lucky coin" : ""} → ${ok ? "success" : "failure"}.`,
-      ),
-    );
+  if (ch.basePct !== undefined) {
+    let chance = ch.basePct;
+
+    // Specialty bonus: find the member assigned to fillsSlot (if any), else best in party
+    if (ch.checkType) {
+      const ct = ch.checkType as CheckType;
+      let bestBonus = 0;
+      if (ch.fillsSlot) {
+        const chosen = resolveSlot(next, ch.fillsSlot);
+        if (chosen) bestBonus = memberCheckBonus(chosen.specialty, chosen.traits ?? [], ct);
+      } else {
+        for (const f of livingFriends(next)) {
+          const b = memberCheckBonus(f.specialty, f.traits ?? [], ct);
+          if (b > bestBonus) bestBonus = b;
+        }
+      }
+      chance = Math.min(95, chance + bestBonus);
+    }
+
+    // Lucky coin reroll
+    const draw = Math.floor(rng() * 100);
+    ok = draw < chance;
+    if (!ok && hasItem(next, "u_lucky_coin") && next.flags.lucky_coin_used !== true) {
+      const draw2 = Math.floor(rng() * 100);
+      ok = draw2 < chance;
+      if (ok) {
+        next.flags.lucky_coin_used = true;
+        pushLog(next, `Lucky coin redraws — success! (${chance}% odds)`);
+      }
+    }
+
+    if (!next.flags.lucky_coin_used || !ok)
+      pushLog(next, `${chance}% odds — ${ok ? "success" : "failure"}.`);
   }
 
   const branch = ok ? ch.successEffects : ch.failureEffects;
   const mapped = branch.map((e) =>
-    e.type === "appendLog" ? { ...e, text: tpl(e.text) } : e,
+    e.type === "appendLog" ? { ...e, text: templateString(next, e.text, rng) } : e,
   );
-  next = applyEffects(next, mapped, rng, spec);
+  next = applyEffects(next, mapped, rng);
 
-  if (ev.locations?.includes("embark") && next.kmRemaining <= 0 && next.embarkEventsLeft > 0) {
+  if (ev.locations?.includes("embark") && next.kmRemaining <= 0 && next.embarkEventsLeft > 0)
     next.embarkEventsLeft -= 1;
-  }
 
   const lost = evaluateLoss(next);
   if (lost) {
@@ -490,12 +578,11 @@ export function resolveChoice(
   } else if (evaluateWin(next)) {
     next.outcome = "won";
     next.phase = "recap";
-    pushLog(next, "You clear final processing. Cold airlock light—then silence. You made the ship.");
+    pushLog(next, "You clear final processing. Cold airlock light — then silence. You made the ship.");
   }
   return next;
 }
 
-/** Resolve an ambient event: apply its effects and clear currentEvent. */
 export function resolveAmbientEvent(s: RunState, rng: () => number): RunState {
   if (!s.currentEvent || s.currentEvent.kind !== "ambient") return cloneState(s);
   let next = cloneState(s);
@@ -510,12 +597,11 @@ export function resolveAmbientEvent(s: RunState, rng: () => number): RunState {
   } else if (evaluateWin(next)) {
     next.outcome = "won";
     next.phase = "recap";
-    pushLog(next, "You clear final processing. Cold airlock light—then silence. You made the ship.");
+    pushLog(next, "You clear final processing. Cold airlock light — then silence. You made the ship.");
   }
   return next;
 }
 
-/** After dismissing runModal, surface shop or staged encounter if any. */
 export function dismissRunModal(s: RunState): RunState {
   const out = cloneState(s);
   if (!out.runModal) return out;
@@ -532,13 +618,13 @@ export function dismissRunModal(s: RunState): RunState {
   }
 
   if (out.pendingEventAfterModal) {
-    out.currentEvent = out.pendingEventAfterModal;
+    const rng = mulberry32((out.rngSeed + out.day * 7331) >>> 0);
+    out.currentEvent = autoFillEventSlots(out.pendingEventAfterModal, out, rng);
     out.pendingEventAfterModal = null;
   }
   return out;
 }
 
-/** Buy from a biome shop using run caps. */
 export function purchaseFromShop(
   s: RunState,
   location: LocationId,
@@ -582,27 +668,19 @@ export function purchaseFromShop(
     return out;
   }
 
+  // common — apply grants
   out.resources.caps -= price;
   if (def.grants) {
-    const g = def.grants;
-    if (g.rations) out.resources.rations += g.rations;
-    if (g.water) out.resources.water += g.water;
-    if (g.meds) out.resources.meds += g.meds;
-    if (g.parts) out.resources.parts += g.parts;
-    if (g.fuel) out.resources.fuel += g.fuel;
+    if (def.grants.rations) out.resources.rations += def.grants.rations;
+    if (def.grants.meds)    out.resources.meds    += def.grants.meds;
+    if (def.grants.parts)   out.resources.parts   += def.grants.parts;
+    if (def.grants.fuel)    out.resources.fuel    += def.grants.fuel;
   }
   pushLog(out, `Purchased ${def.name} (−${price} caps).`);
   return out;
 }
 
 // ── Daily action helpers ──────────────────────────────────────────────────────
-
-/** Only travel and scavenge can trigger random events. */
-function dailyEventChance(action: DailyAction): number {
-  if (action === "travel") return 0.35;
-  if (action === "scavenge") return 0.4;
-  return 0;
-}
 
 function locationModalBody(to: LocationId): string {
   switch (to) {
@@ -615,7 +693,7 @@ function locationModalBody(to: LocationId): string {
     case "port_sprawl":
       return "Checkpoints, shanty markets, and the arcology's rib cage swallowing the sky.";
     case "embark":
-      return "Floodlights, cordons, and the last honest fear—too close to turn back.";
+      return "Floodlights, cordons, and the last honest fear — too close to turn back.";
     default:
       return "The horizon thins. Another stretch of poisoned nowhere claims the road.";
   }
@@ -626,36 +704,63 @@ function applyEmbarkDay(out: RunState, rng: () => number): void {
   const ps = partyScaling(n);
   const stress = out.difficulty === "hard" ? 1.15 : out.difficulty === "easier" ? 0.92 : 1;
   const er = Math.max(1, Math.round((1.2 * n * ps.rationMult * stress) / 7));
-  const ew = Math.max(1, Math.round((1.0 * n * ps.rationMult * stress) / 7));
   out.resources.rations = Math.max(0, out.resources.rations - er);
-  out.resources.water = Math.max(0, out.resources.water - ew);
   out.portChaos = Math.min(100, out.portChaos + 0.12 + rng() * 0.2);
-  pushLog(out, `Embark queue: −${er} rations, −${ew} water. Chaos grinds another notch.`);
+  pushLog(out, `Embark queue: −${er} rations. Chaos grinds another notch.`);
 }
 
 function applyTravelDay(out: RunState, rng: () => number): void {
   const n = livingFriends(out).length;
   const ps = partyScaling(n);
-  const stress = out.difficulty === "hard" ? 1.15 : out.difficulty === "easier" ? 0.92 : 1;
+  const diff = out.difficulty;
+  const stress = diff === "hard" ? 1.15 : diff === "easier" ? 0.92 : 1;
+  const pace = PACE_CONFIG[out.pace];
 
-  const rationCost = Math.max(1, Math.round((2.2 * n * ps.rationMult * stress) / 7));
-  const waterCost  = Math.max(1, Math.round((1.8 * n * ps.rationMult * stress) / 7));
-  out.resources.rations = Math.max(0, out.resources.rations - rationCost);
-  out.resources.water   = Math.max(0, out.resources.water   - waterCost);
+  // Ration consumption (scaled down — no minimum floor)
+  const rationCost = Math.round(out.rationsPerPerson * n * pace.rationMult * stress * RATION_COST_SCALE);
+  if (rationCost > 0) consumeRationsOrStarve(out, rationCost, "daily travel");
 
-  const fuelUse = Math.max(1, Math.round(
-    ((hasItem(out, "u_maps") ? 0.85 : 1) * (3 + n * 0.4) * stress) / 7,
-  ));
-  out.resources.fuel = Math.max(0, out.resources.fuel - fuelUse);
+  // Morale from rations
+  if (out.rationsPerPerson >= 3) {
+    for (const f of livingFriends(out)) f.morale = Math.min(100, f.morale + 1);
+  } else if (out.rationsPerPerson === 1) {
+    for (const f of livingFriends(out)) f.morale = Math.max(0, f.morale - 2);
+  }
 
-  const kmGain =
-    5 + Math.floor(rng() * 5) +
-    Math.floor((out.transport / 100) * 6) -
+  // Fuel consumption (pace-based; fractional barrels per day)
+  const fuelMult = hasItem(out, "u_maps") ? 0.85 : 1;
+  const fuelCost = roundFuel(pace.fuelPerDay * fuelMult);
+  if (fuelCost > 0 && out.resources.fuel >= fuelCost) {
+    out.resources.fuel = roundFuel(out.resources.fuel - fuelCost);
+  } else if (fuelCost > 0 && out.resources.fuel > 0) {
+    out.resources.fuel = 0;
+  }
+  const pushing = out.resources.fuel <= 0;
+  if (pushing && fuelCost > 0) {
+    pushLog(out, "No fuel — the convoy pushes the rig. Progress crawls; the road is brutal.");
+  }
+
+  // km gained: pace base + variance + transport bonus + personal item bonus
+  let kmBonus = 0;
+  for (const f of livingFriends(out)) {
+    for (const itemId of f.memberItems) {
+      const def = getItem(itemId);
+      if (def?.memberEffect?.travelKmBonus) kmBonus += def.memberEffect.travelKmBonus;
+    }
+  }
+  let kmGain =
+    pace.baseKm +
+    Math.floor(rng() * (pace.kmVariance + 1)) +
+    Math.floor((out.transport / 100) * 6) +
+    kmBonus -
     (out.portChaos > 60 ? 2 : 0);
+  if (pushing) kmGain = Math.max(1, Math.round(kmGain * PUSH_SPEED_MULT));
   out.kmRemaining = Math.max(0, out.kmRemaining - kmGain);
 
+  // Radiation
   let radTick = 1 + Math.floor(rng() * 2) + Math.floor(out.portChaos / 35);
   if (hasItem(out, "u_rad_blanket")) radTick = Math.max(0, Math.floor(radTick * 0.85));
+  if (hasItem(out, "u_geiger")) radTick = Math.max(0, Math.floor(radTick * 0.85));
   if (
     hasItem(out, "u_rebreather") &&
     out.flags.rebreather_rad_soaked !== true &&
@@ -663,129 +768,167 @@ function applyTravelDay(out: RunState, rng: () => number): void {
   ) {
     radTick -= 3;
     out.flags.rebreather_rad_soaked = true;
-    pushLog(out, "The cracked rebreather eats a surge of rads. It will not do that again.");
+    pushLog(out, "The cracked rebreather absorbs a rad surge. It won't do that again.");
   }
   out.rads += radTick;
 
-  const chaosRise = 0.08 + rng() * (out.kmRemaining < 900 ? 0.25 : 0.1);
-  out.portChaos = Math.min(100, out.portChaos + chaosRise);
+  // Port chaos drift
+  out.portChaos = Math.min(100, out.portChaos + 0.08 + rng() * (out.kmRemaining < 900 ? 0.25 : 0.1));
 
+  // Random breakdown
   if (rng() < 0.012 * ps.targetPressure) {
     out.transport = Math.max(0, out.transport - (1 + Math.floor(rng() * 2)));
     pushLog(out, "Convoy shudders: another breakdown on scorched asphalt.");
   }
-  pushLog(out, `Travel: −${rationCost} rations, −${waterCost} water, −${fuelUse} fuel, −${kmGain} km, +${radTick} rads.`);
+
+  // Pace-based injury (much higher while pushing without fuel)
+  const injuryChance = pace.injuryChance + (pushing ? PUSH_INJURY_BONUS : 0);
+  for (const f of livingFriends(out)) {
+    // Combine item + trait injury resistance
+    const resistPct = memberPassiveBonus(f, "injuryResistance");
+    const resist = resistPct / 100;
+    const effectiveChance = Math.max(0, injuryChance - resist);
+    if (rng() < effectiveChance && f.status === "alive") {
+      f.status = "injured";
+      f.health = Math.min(f.health, Math.round(f.maxHealth * 0.6));
+      pushLog(
+        out,
+        pushing
+          ? `${f.name} was hurt while pushing the convoy.`
+          : `${f.name} was hurt on the road.`,
+      );
+    }
+  }
+
+  const rationNote = rationCost > 0 ? `−${rationCost} rations` : "rations unchanged";
+  const fuelNote = pushing
+    ? "out of fuel (pushing)"
+    : fuelCost > 0
+      ? `−${fuelCost.toFixed(1)} fuel`
+      : "fuel unchanged";
+  pushLog(
+    out,
+    `Travel (${PACE_LABEL[out.pace]}${pushing ? ", pushing rig" : ""}): ${rationNote}, ${fuelNote}, −${kmGain} km, +${radTick} rads.`,
+  );
 
   if (out.kmRemaining <= 0 && out.embarkEventsLeft === 0 && !out.flags.embark_chain_started) {
     out.flags.embark_chain_started = true;
     out.embarkEventsLeft = 6 + Math.min(4, n);
-    pushLog(out, "The launch complex looms. Embarkation is not mercy—only another gauntlet.");
+    pushLog(out, "The launch complex looms. Embarkation is not mercy — only another gauntlet.");
   }
 }
 
-function applyScavengeDay(out: RunState, rng: () => number): void {
+/**
+ * "Search for Food" — pause-menu action.
+ * Base 55% success, boosted by party members' scavengeBonus items.
+ */
+function applySearchFoodDay(out: RunState, rng: () => number): void {
   const n = livingFriends(out).length;
-  const waterCost = Math.max(1, Math.round(0.35 * n));
-  out.resources.water = Math.max(0, out.resources.water - waterCost);
+  const rationCost = Math.round(out.rationsPerPerson * n * 0.35);
+  if (rationCost > 0) consumeRationsOrStarve(out, rationCost, "searching for food");
   out.rads += 1 + Math.floor(rng() * 3);
 
-  const roll = rng();
-  if (roll < 0.28) {
-    const rations = 2 + Math.floor(rng() * 4);
-    out.resources.rations += rations;
-    pushLog(out, `Scavenge: +${rations} rations (−${waterCost} water).`);
-  } else if (roll < 0.52) {
-    const w = 2 + Math.floor(rng() * 5);
-    out.resources.water += w;
-    pushLog(out, `Scavenge: +${w} water (net after −${waterCost} search cost).`);
-  } else if (roll < 0.68) {
-    const rations = 1 + Math.floor(rng() * 3);
-    const w = 1 + Math.floor(rng() * 3);
-    out.resources.rations += rations;
-    out.resources.water += w;
-    pushLog(
-      out,
-      `Scavenge: +${rations} rations, +${w} water (−${waterCost} water).`,
-    );
-  } else if (roll < 0.78) {
-    const parts = 1 + Math.floor(rng() * 4);
-    out.resources.parts += parts;
-    pushLog(out, `Scavenge: +${parts} parts (−${waterCost} water).`);
-  } else if (roll < 0.86) {
-    const fuel = 1 + Math.floor(rng() * 4);
-    out.resources.fuel += fuel;
-    pushLog(out, `Scavenge: +${fuel} fuel (−${waterCost} water).`);
-  } else if (roll < 0.92) {
-    out.resources.rations += 1;
-    out.resources.water += 2;
-    out.resources.parts += 1;
-    pushLog(
-      out,
-      `Scavenge: mixed haul (+1 rations, +2 water, +1 parts, −${waterCost} water).`,
-    );
-  } else if (roll < 0.97) {
-    pushLog(out, `Scavenge: nothing useful (−${waterCost} water).`);
-  } else {
-    const tgt = pickTarget(out, "random_living", rng)[0];
-    if (tgt) {
-      tgt.health = Math.max(1, tgt.health - (8 + Math.floor(rng() * 12)));
-      tgt.status = "injured";
-      pushLog(out, `Scavenge accident — ${tgt.name} is hurt.`);
+  // Compute success chance: base 55% + scavengeBonus (items + traits) + best specialty
+  let chance = 55;
+  let bestScavengeSpec = 0;
+  for (const f of livingFriends(out)) {
+    chance += memberPassiveBonus(f, "scavengeBonus");
+    const specBonus = memberCheckBonus(f.specialty, f.traits ?? [], "scavenge" as CheckType);
+    if (specBonus > bestScavengeSpec) bestScavengeSpec = specBonus;
+  }
+  chance += bestScavengeSpec;
+  chance = Math.min(90, chance);
+
+  const roll = Math.floor(rng() * 100);
+  if (roll < chance) {
+    const roll2 = rng();
+    let result = "";
+    if (roll2 < 0.5) {
+      const rations = 8 + Math.floor(rng() * 14);
+      out.resources.rations += rations;
+      result = `+${rations} rations`;
+    } else if (roll2 < 0.72) {
+      const rations = 5 + Math.floor(rng() * 8);
+      const parts = 1 + Math.floor(rng() * 3);
+      out.resources.rations += rations;
+      out.resources.parts += parts;
+      result = `+${rations} rations, +${parts} parts`;
+    } else if (roll2 < 0.88) {
+      const fuel = 6 + Math.floor(rng() * 10);
+      out.resources.fuel += fuel;
+      result = `+${fuel} fuel`;
     } else {
-      pushLog(out, `Scavenge: empty (−${waterCost} water).`);
+      const meds = 1 + Math.floor(rng() * 2);
+      out.resources.meds += meds;
+      result = `+${meds} meds`;
     }
+    pushLog(out, `Search: found supplies — ${result}.`);
+  } else {
+    pushLog(out, `Search: nothing useful out there (−${rationCost} rations used searching).`);
   }
 }
 
+/** "Stop to Rest" — pause-menu action. Heals party, treats sick. */
 function applyRestDay(out: RunState, rng: () => number): void {
   const n = livingFriends(out).length;
-  const rationCost = Math.max(1, Math.round((1.1 * n) / 7));
-  const waterCost  = Math.max(1, Math.round((0.9 * n) / 7));
-  out.resources.rations = Math.max(0, out.resources.rations - rationCost);
-  out.resources.water   = Math.max(0, out.resources.water   - waterCost);
+  const rationCost = Math.round(out.rationsPerPerson * n * 0.55);
+  if (rationCost > 0) consumeRationsOrStarve(out, rationCost, "resting");
 
   for (const f of livingFriends(out)) {
-    f.health = Math.min(f.maxHealth, f.health + 4 + Math.floor(rng() * 6));
+    let heal = 8 + Math.floor(rng() * 6);
+    // Personal item heal bonus
+    for (const itemId of f.memberItems) {
+      const def = getItem(itemId);
+      if (def?.memberEffect?.dailyHealBonus) heal += def.memberEffect.dailyHealBonus;
+    }
+    f.health = Math.min(f.maxHealth, f.health + heal);
     if (f.health > f.maxHealth * 0.55 && f.status === "injured") f.status = "alive";
-    f.morale = Math.min(100, f.morale + 2 + Math.floor(rng() * 4));
+    f.morale = Math.min(100, f.morale + 3 + Math.floor(rng() * 4));
   }
 
-  // Attempt to treat sick members with meds during rest
+  // Treat sick with meds
   for (const f of livingFriends(out)) {
     if (!f.sick) continue;
     if (out.resources.meds >= 2) {
       const sicknessName = f.sick.name;
       out.resources.meds -= 2;
       f.sick = undefined;
-      pushLog(out, `Meds and rest drive ${sicknessName} out of ${f.name}.`);
+      pushLog(out, `Meds and rest clear ${sicknessName} from ${f.name}.`);
     } else {
-      pushLog(out, `${f.name} is ill (${f.sick.name}, ${f.sick.daysLeft}d left) but there are no meds.`);
+      pushLog(out, `${f.name} is ill (${f.sick.name}, ${f.sick.daysLeft}d) but no meds available.`);
     }
   }
 
-  pushLog(out, `Rest: −${rationCost} rations, −${waterCost} water. Bodies recover a little.`);
+  pushLog(out, `Rest: −${rationCost} rations. The party recovers.`);
 }
 
-function applyRepairDay(out: RunState, rng: () => number): void {
-  if (out.resources.parts < 2) {
-    pushLog(out, "Repair skipped — not enough parts.");
-    return;
-  }
-  const use = 1 + Math.floor(rng() * 2);
-  out.resources.parts = Math.max(0, out.resources.parts - use);
-  out.transport = Math.min(100, out.transport + 4 + Math.floor(rng() * 8));
-  pushLog(out, `Repair: −${use} parts, convoy condition improves.`);
-}
-
-function applyScoutDay(out: RunState, rng: () => number): void {
+/**
+ * "Attempt to Trade" — pause-menu action.
+ * Spends a day. Base 50% success (+tradeBonus from personal items).
+ * On success: opens shop modal. On failure: nothing.
+ */
+function applyTradeAttemptDay(out: RunState, rng: () => number): void {
   const n = livingFriends(out).length;
-  out.resources.water = Math.max(0, out.resources.water - Math.max(1, Math.round(0.25 * n)));
-  if (rng() < 0.55) {
-    out.flags.scout_route_bonus = true;
-    pushLog(out, `${livingFriends(out)[0]?.name ?? "Scout"} maps a safer thread for the next march.`);
+  const rationCost = Math.round(out.rationsPerPerson * n * 0.35);
+  if (rationCost > 0) consumeRationsOrStarve(out, rationCost, "attempting to trade");
+
+  let chance = 50;
+  let bestTradeSpec = 0;
+  for (const f of livingFriends(out)) {
+    chance += memberPassiveBonus(f, "tradeBonus");
+    const specBonus = memberCheckBonus(f.specialty, f.traits ?? [], "negotiate" as CheckType);
+    if (specBonus > bestTradeSpec) bestTradeSpec = specBonus;
+  }
+  chance += bestTradeSpec;
+  chance = Math.min(85, chance);
+
+  const roll = Math.floor(rng() * 100);
+  if (roll < chance) {
+    pushLog(out, "A trader's banner at the next ruin — they're willing to deal.");
+    if (!out.runModal)
+      out.runModal = { kind: "shop", location: out.currentLocation };
   } else {
-    out.rads += 2 + Math.floor(rng() * 4);
-    pushLog(out, "Scouting pushes into a hot drift.");
+    pushLog(out, `Attempt to trade: no traders found (−${rationCost} rations wasted).`);
   }
 }
 
@@ -800,35 +943,25 @@ export function resolveDailyTurn(s: RunState, action: DailyAction): RunState {
 
   out.day += 1;
   out.departureDaysRemaining -= 1;
-  pushLog(out, `— Day ${out.day}: ${action} —`);
 
-  // Sickness tick happens before the action
+  // Sickness tick
   processSicknessDay(out);
 
   if (out.kmRemaining <= 0) {
     applyEmbarkDay(out, rng);
   } else {
-    const travelBoost = out.flags.scout_route_bonus === true && action === "travel";
-    if (travelBoost) out.flags.scout_route_bonus = false;
     switch (action) {
-      case "travel":
-        applyTravelDay(out, rng);
-        if (travelBoost) {
-          out.kmRemaining = Math.max(0, out.kmRemaining - (2 + Math.floor(rng() * 4)));
-          pushLog(out, "Scouted route pays off: a few extra km shaved.");
-        }
-        break;
-      case "scavenge": applyScavengeDay(out, rng); break;
-      case "rest":     applyRestDay(out, rng);     break;
-      case "repair":   applyRepairDay(out, rng);   break;
-      case "scout":    applyScoutDay(out, rng);    break;
+      case "travel":      applyTravelDay(out, rng);      break;
+      case "search_food": applySearchFoodDay(out, rng);  break;
+      case "rest":        applyRestDay(out, rng);        break;
+      case "trade":       applyTradeAttemptDay(out, rng); break;
     }
   }
 
   out.currentLocation = locationFromKm(out.kmRemaining);
   const locationChanged = out.currentLocation !== prevLoc;
 
-  // Early loss check (starvation, etc.)
+  // Early loss check
   const lost0 = evaluateLoss(out);
   if (lost0) {
     out.outcome = "lost";
@@ -838,17 +971,11 @@ export function resolveDailyTurn(s: RunState, action: DailyAction): RunState {
     return out;
   }
 
-  // Random events: travel → road pool; scavenge → salvage pool; rest/repair/scout → none
+  // Random travel events (travel action only)
   const rngEv = mulberry32((out.rngSeed + out.day * 11003) >>> 0);
   let maybeEvent: GameEvent | null = null;
-  const skipRandom = !!out.runModal;
-  const evChance = dailyEventChance(action);
-  if (!skipRandom && evChance > 0 && rngEv() < evChance) {
-    if (action === "scavenge") {
-      maybeEvent = pickNextEvent(out, SCAVENGE_EVENTS, rngEv, "scavenge");
-    } else if (action === "travel") {
-      maybeEvent = pickNextEvent(out, TRAVEL_EVENTS, rngEv, "travel");
-    }
+  if (!out.runModal && action === "travel" && rngEv() < 0.35) {
+    maybeEvent = pickNextEvent(out, TRAVEL_EVENTS, rngEv, "travel");
   }
 
   // Location change takes modal priority
@@ -864,11 +991,11 @@ export function resolveDailyTurn(s: RunState, action: DailyAction): RunState {
     pushLog(out, `Entered ${LOCATION_LABEL[out.currentLocation]}.`);
     if (maybeEvent) out.pendingEventAfterModal = maybeEvent;
   } else if (maybeEvent) {
-    out.currentEvent = maybeEvent;
+    out.currentEvent = autoFillEventSlots(maybeEvent, out, rngEv);
     out.pendingEventAfterModal = null;
   }
 
-  // Final win/loss check
+  // Final win/loss
   const lost = evaluateLoss(out);
   if (lost && out.outcome === "ongoing") {
     out.outcome = "lost";
@@ -878,7 +1005,7 @@ export function resolveDailyTurn(s: RunState, action: DailyAction): RunState {
   } else if (evaluateWin(out)) {
     out.outcome = "won";
     out.phase = "recap";
-    pushLog(out, "You clear final processing. Cold airlock light—then silence. You made the ship.");
+    pushLog(out, "You clear final processing. Cold airlock light — then silence. You made the ship.");
   }
 
   return out;
