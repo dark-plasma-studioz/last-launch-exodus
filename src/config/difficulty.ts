@@ -14,37 +14,53 @@ export interface DifficultyConfig {
   rationStress: number;
 }
 
+/**
+ * Difficulty tuning notes:
+ *
+ * "Hard" is designed to punish every bad decision. You must scavenge constantly
+ * and cannot afford to rest much. The goal is still achievable with good choices.
+ *
+ * "Standard" is the intended experience — tight resources but not hopeless.
+ * Players should feel pressure without feeling cheated.
+ *
+ * "Easier" is forgiving. Bad events hurt but rarely cascade into runs ending.
+ * It's a good mode to learn the event landscape on.
+ *
+ * Rule of thumb: baseMeds should cover at least 2–3 sicknesses before foraging.
+ * Fuel should last roughly the first third of the journey on steady pace.
+ * Caps should afford one or two meaningful depot upgrades.
+ */
 export const DIFFICULTY: Record<DifficultyId, DifficultyConfig> = {
   hard: {
     label: "Hard",
     years: 1.5,
-    startingCaps: 750,
-    baseRations: 50,
-    baseMeds: 4,
-    baseParts: 5,
-    baseFuel: 28,
+    startingCaps: 800,      // up from 750 — still brutal but not impossible to equip
+    baseRations: 52,
+    baseMeds: 6,            // up from 4 — was too easy to die from first sickness
+    baseParts: 7,           // up from 5
+    baseFuel: 32,           // up from 28 — steady pace burns 0.4/day, this buys ~80 days
     encounterWeight: 1.25,
     rationStress: 1.2,
   },
   standard: {
     label: "Standard",
     years: 2,
-    startingCaps: 1000,
-    baseRations: 72,
-    baseMeds: 6,
-    baseParts: 7,
-    baseFuel: 38,
+    startingCaps: 1100,     // up from 1000
+    baseRations: 75,
+    baseMeds: 8,            // up from 6 — sickness hits hard; this lets you handle two before foraging
+    baseParts: 9,           // up from 7
+    baseFuel: 44,           // up from 38 — covers ~110 days steady before refuelling
     encounterWeight: 1,
     rationStress: 1,
   },
   easier: {
     label: "Easier",
     years: 3,
-    startingCaps: 1250,
-    baseRations: 110,
-    baseMeds: 8,
-    baseParts: 8,
-    baseFuel: 55,
+    startingCaps: 1400,     // up from 1250
+    baseRations: 115,
+    baseMeds: 12,           // up from 8
+    baseParts: 11,          // up from 8
+    baseFuel: 65,           // up from 55
     encounterWeight: 0.88,
     rationStress: 0.88,
   },

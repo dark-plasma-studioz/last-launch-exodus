@@ -22,4 +22,23 @@ function basePath(): string {
 export default defineConfig({
   plugins: [react()],
   base: basePath(),
+  server: {
+    proxy: {
+      "/api": { target: "http://localhost:3000", changeOrigin: true },
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          engine: [
+            "./src/engine/effects.ts",
+            "./src/engine/rng.ts",
+            "./src/content/events.ts",
+            "./src/content/eventChunks.ts",
+          ],
+        },
+      },
+    },
+  },
 });

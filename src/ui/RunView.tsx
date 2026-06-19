@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useRef,
   useState,
@@ -212,7 +213,10 @@ function MemberHoverPanel(props: { friend: Friend }): ReactElement {
   );
 }
 
-function MemberCard(props: { friend: Friend; floats: FloatDelta[] }): ReactElement {
+const MemberCard = memo(function MemberCard(props: {
+  friend: Friend;
+  floats: FloatDelta[];
+}): ReactElement {
   const f = props.friend;
   const dead = f.status === "dead";
   const sick = !!f.sick;
@@ -286,7 +290,7 @@ function MemberCard(props: { friend: Friend; floats: FloatDelta[] }): ReactEleme
       : null}
     </>
   );
-}
+});
 
 // ── Map view ──────────────────────────────────────────────────────────────────
 
@@ -822,7 +826,7 @@ export function RunView(props: RunViewProps): ReactElement {
                       className="choice-btn"
                       onClick={() => {
                         if (slotDef) {
-                          // Show member picker first
+                          // Show member picker first so the player picks who acts
                           setPendingSlotPick({ choiceId: ch.id, slot: slotDef });
                         } else {
                           handleChoice(s.currentEvent!, ch.id);
@@ -830,7 +834,18 @@ export function RunView(props: RunViewProps): ReactElement {
                       }}
                     >
                       <span className="choice-num">[{i + 1}]</span>
-                      {ch.text}
+                      <span className="choice-text">{ch.text}</span>
+                      {/* Show success odds so players can make informed decisions */}
+                      {ch.basePct !== undefined && (
+                        <span
+                          className={`choice-pct ${
+                            ch.basePct >= 60 ? "pct-ok" :
+                            ch.basePct >= 40 ? "pct-warn" : "pct-danger"
+                          }`}
+                        >
+                          {ch.basePct}%
+                        </span>
+                      )}
                       {slotDef && <span className="choice-req"> (pick a member)</span>}
                       {ch.requiredItem && !slotDef ? <span className="choice-req"> (needs item)</span> : null}
                     </button>

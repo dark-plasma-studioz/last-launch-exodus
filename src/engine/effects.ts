@@ -54,16 +54,23 @@ export function paceTravelTip(pace: Pace): string {
 export const PACE_ALL_TIP =
   "Travel pace sets distance and fuel per day. Leisurely 6–8 km (0.2 fuel). Steady 9–11 km (0.4 fuel). Grueling 12–15 km (0.6 fuel). Faster paces mean more road injuries.";
 
-/** Per travel day: fraction of rationsPerPerson × party actually consumed. */
-const RATION_COST_SCALE = 0.22;
+/**
+ * Per travel day: fraction of (rationsPerPerson × party) actually consumed.
+ * Lowered from 0.22 → 0.20 so food pressure is real but not relentless.
+ * Increasing this makes rations drain faster; decreasing makes the game easier.
+ */
+const RATION_COST_SCALE = 0.20;
 
 function roundFuel(n: number): number {
   return Math.round(n * 10) / 10;
 }
 /** Speed multiplier when out of fuel (0.1 = 90% slower). */
 const PUSH_SPEED_MULT = 0.1;
-/** Extra injury chance per person when pushing the rig. */
-const PUSH_INJURY_BONUS = 0.24;
+/**
+ * Extra injury chance per person when pushing the rig (out of fuel).
+ * Reduced from 0.24 → 0.18; running dry is still punishing but survivable.
+ */
+const PUSH_INJURY_BONUS = 0.18;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -843,22 +850,23 @@ function applySearchFoodDay(out: RunState, rng: () => number): void {
   if (roll < chance) {
     const roll2 = rng();
     let result = "";
+    // Rations are the most common find; other resources appear less often.
     if (roll2 < 0.5) {
-      const rations = 8 + Math.floor(rng() * 14);
+      const rations = 10 + Math.floor(rng() * 16); // 10–25, slightly more generous
       out.resources.rations += rations;
       result = `+${rations} rations`;
     } else if (roll2 < 0.72) {
-      const rations = 5 + Math.floor(rng() * 8);
+      const rations = 6 + Math.floor(rng() * 9);
       const parts = 1 + Math.floor(rng() * 3);
       out.resources.rations += rations;
       out.resources.parts += parts;
       result = `+${rations} rations, +${parts} parts`;
     } else if (roll2 < 0.88) {
-      const fuel = 6 + Math.floor(rng() * 10);
+      const fuel = 7 + Math.floor(rng() * 11); // 7–17
       out.resources.fuel += fuel;
       result = `+${fuel} fuel`;
     } else {
-      const meds = 1 + Math.floor(rng() * 2);
+      const meds = 1 + Math.floor(rng() * 3); // 1–3, slightly more meds
       out.resources.meds += meds;
       result = `+${meds} meds`;
     }
@@ -875,15 +883,16 @@ function applyRestDay(out: RunState, rng: () => number): void {
   if (rationCost > 0) consumeRationsOrStarve(out, rationCost, "resting");
 
   for (const f of livingFriends(out)) {
-    let heal = 8 + Math.floor(rng() * 6);
-    // Personal item heal bonus
+    // Base rest heal raised (8–13 → 12–19) so a rest day is a meaningful recovery.
+    let heal = 12 + Math.floor(rng() * 8);
+    // Personal item heal bonus (medic bag, stim injector, etc.)
     for (const itemId of f.memberItems) {
       const def = getItem(itemId);
       if (def?.memberEffect?.dailyHealBonus) heal += def.memberEffect.dailyHealBonus;
     }
     f.health = Math.min(f.maxHealth, f.health + heal);
     if (f.health > f.maxHealth * 0.55 && f.status === "injured") f.status = "alive";
-    f.morale = Math.min(100, f.morale + 3 + Math.floor(rng() * 4));
+    f.morale = Math.min(100, f.morale + 4 + Math.floor(rng() * 5));
   }
 
   // Treat sick with meds
